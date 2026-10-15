@@ -1,0 +1,35 @@
+# PyInstaller 的 Windows 版本资源。
+# 这段内容会出现在 exe 的「属性 → 详细信息」里，
+# 也是杀毒软件/智能筛查判断「这是不是一个正经软件」时会看的东西之一。
+# 语言代码 0804 = 简体中文，代码页 1200 = Unicode。
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 1, 0),
+    prodvers=(1, 0, 1, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '080404B0',
+        [
+          StringStruct('CompanyName', 'CampusLink'),
+          StringStruct('FileDescription', 'CampusLink 校园网认证客户端'),
+          StringStruct('FileVersion', '1.0.1.0'),
+          StringStruct('InternalName', 'CampusLink'),
+          StringStruct('LegalCopyright', 'Copyright (C) 2026 CampusLink'),
+          StringStruct('OriginalFilename', 'CampusLink.exe'),
+          StringStruct('ProductName', 'CampusLink 校园网认证'),
+          StringStruct('ProductVersion', '1.0.1.0'),
+          StringStruct('Comments', '校园网认证客户端，支持自动重连与托盘常驻')
+        ]
+      )
+    ]),
+    VarFileInfo([VarStruct('Translation', [2052, 1200])])
+  ]
+)

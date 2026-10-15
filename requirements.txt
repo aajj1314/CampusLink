@@ -1,0 +1,23 @@
+# ---- 认证核心（平台无关，OpenWrt 移植时这些都要保留）----
+requests>=2.31.0          # HTTP 会话
+beautifulsoup4>=4.12.0    # 解析登录页表单
+lxml>=5.0.0               # bs4 的解析后端
+ddddocr>=1.5.6            # 验证码识别（ONNX 本地推理，不联网）
+numpy>=1.26.0
+opencv-python>=4.9.0      # 图像预处理
+
+# 注意：onnxruntime 由 ddddocr 间接引入，显式固定避免推理后端漂移
+onnxruntime>=1.16.0
+pillow>=10.0.0
+
+# ---- GUI ----
+PySide6>=6.6.0            # Qt for Python，含 QtWidgets / QtGui / QtCore
+
+# ---- 凭据存储 ----
+# keyring 在 Windows 上后端是「凭据管理器」(Credential Manager)，
+# 在 Linux 走 SecretService，均不落明文。OpenWrt 上没有后端时会自动降级，
+# 由 campuslink/secrets.py 统一处理降级策略。
+keyring>=24.0.0
+
+# ---- 打包（仅开发期需要）----
+pyinstaller>=6.10.0

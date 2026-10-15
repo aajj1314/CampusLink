@@ -1,0 +1,34 @@
+{
+  "name": "桂林信息科技学院",
+  "note": "多运营商接入管理平台统一认证系统（河北善雅科技 / 润建股份提供服务）。ASP.NET WebForms，无前端加密，密码明文提交。字段名取自 2026-10-14 实测。",
+
+  "portal_url": "http://10.6.6.6/login",
+  "portal_candidates": [
+    "http://10.6.6.6/login",
+    "http://10.6.6.6/"
+  ],
+  "login_url": "",
+  "method": "POST",
+
+  "field_map": {
+    "operator": "ctl00$MainContent$TextBoxISP",
+    "student_id": "ctl00$MainContent$SSOGUITID",
+    "account": "ctl00$MainContent$SSOACC",
+    "password": "ctl00$MainContent$SSOPWD",
+    "captcha": "ctl00$MainContent$TextBoxCC"
+  },
+
+  "success_check": {
+    "type": "contains",
+    "value": "联网成功"
+  },
+
+  "captcha_url": "auto",
+  "ocr_length": 4,
+  "ocr_strategies": ["raw", "gray"],
+  "max_retry": 8,
+  "timeout": 10,
+  "verify_ssl": false,
+  "check_online_first": true,
+  "extra_fields": {}
+}

@@ -1,0 +1,158 @@
+
+
+
+
+<!DOCTYPE html>
+
+
+
+<html lang="zh">
+
+<head><meta http-equiv="Content-Type" content="text/html; charset=utf-8" /><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>
+
+	登录 - 多运营商接入管理平台统一认证系统
+
+</title><link href="Content/Site.css" rel="stylesheet" /><link href="favicon.ico" rel="shortcut icon" type="image/x-icon" /></head>
+
+<body>
+
+    <form method="post" action="./login" id="ctl01">
+
+<div class="aspNetHidden">
+
+<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="RGyvs6yUBRndjLnnfktEmis3mGE1U1S55UGXBKJWY6oEEmtannlRlturMQNfU8v3A6vyMFPB152a4lINjMjMMN/rX5cg0AsplTI7kbYvTLDz17h9HCST5HHxXOfuU1WY7eUqBfnZsHhgGYhEvxfrO7+3Zw1WQCMt6ZtQmhwqaSJKjvljHNvW1TPqqEuO1bk/XDz6LMUnHM3KoVMUthUMnhJYxR9HMTf/q2xyl+lj4yc3nvPKp8SUEEO7PvywYC2xtP3rlamvCoZWk7RrnDEukdHLFY0g3XyPLW5mGIvUmHIQ70tQfDnQt7yjvZxbD8/GD0ITbMrloxbmbZBeM/eDKwCfW9tb5QkW09mHWdV6Fq3A/Jxto8Zi/2R5BouThRLAD+PCZXZ9zn3NRi1jdM7pi1+aLTg+oQHTVbsal3PC6SP1Ys2C3apv3dJ1P7zj9tjpz8xQPA==" />
+
+</div>
+
+
+
+<div class="aspNetHidden">
+
+
+
+	<input type="hidden" name="__VIEWSTATEGENERATOR" id="__VIEWSTATEGENERATOR" value="C2EE9ABB" />
+
+	<input type="hidden" name="__VIEWSTATEENCRYPTED" id="__VIEWSTATEENCRYPTED" value="" />
+
+	<input type="hidden" name="__EVENTVALIDATION" id="__EVENTVALIDATION" value="zvALnjRSq0OCV9drz0/TLgurNw6c4JSrkch8vC+1KZn+CXAMdAw46XrOHgZfozbsKlUJa79mo6zH+D5XKKdmW8y4IKAx+2jIASBS3MBpnL6rQIRu+W/uRK40V0jwpqg0D9vkgKtGeACcOXTuRLcEYlgQZ6Ps4Wq388SdmbOMMlNyNA+v0kj2a/HU0HkJFV3c+N8KDL5IQ1UWP7LDQXEcM7bAEzgiqRBlne2rb53gZMQrpCzLrHFQ0OFEhyIVdFVgW/86bYh8wlZK05ijTHn9ExV9d3KhoK/yOKvKbhlBd6bpplc10ET/s9yvTmNzKIxk8fMjNg==" />
+
+</div>
+
+        <nav class="navbar navbar-expand-sm navbar-toggleable-sm navbar-dark bg-dark">
+
+            <div class="container">
+
+                <a href="./" class="navbar-brand">桂林信息科技学院<br />
+
+                    多运营商接入管理平台统一认证系统</a>
+
+                <div class="collapse navbar-collapse d-sm-inline-flex justify-content-between">
+
+                    <ul class="navbar-nav flex-grow-1">
+
+                        <li class="nav-item"><a href="./" class="nav-link">主页</a></li>
+
+                        
+
+                    </ul>
+
+                    <ul class="navbar-nav navbar-right">
+
+                        <li class="nav-item"><a href="login" class="nav-link">连网登录</a></li>
+
+                        <li class="nav-item"><a href="logoff" class="nav-link">断开网络</a></li>
+
+                        <li class="nav-item"><a href="checking" class="nav-link">信息验证</a></li>
+
+                    </ul>
+
+                </div>
+
+            </div>
+
+        </nav>
+
+        <div class="container body-content">
+
+            
+
+    <main aria-labelledby="title" class="pagemain">
+
+        <h2 id="title">登录</h2>
+
+        <table id="MainContent_LoginTable" class="LoginTable" align="Center">
+
+	<tr>
+
+		<td align="right"><span class="login-1" style="display:inline-block;width:90px;">当前用户IP:</span></td><td align="left"><span id="MainContent_LocalIP" style="display:inline-block;color:LightGreen;width:150px;">192.0.2.88<br />允许使用运营商业务</span><br />
+
+                </td>
+
+	</tr><tr>
+
+		<td align="right"><span class="login-1">运营商:</span></td><td align="left"><input name="ctl00$MainContent$TextBoxISP" type="text" value="自动选择" readonly="readonly" id="MainContent_TextBoxISP" style="width:120px;" /></td>
+
+	</tr><tr>
+
+		<td align="right" style="width:110px;"><span class="login-1">学(工)号:</span></td><td align="left" style="width:125px;"><input name="ctl00$MainContent$SSOGUITID" type="text" value="0000000000" maxlength="12" id="MainContent_SSOGUITID" style="width:120px;" /></td>
+
+	</tr><tr>
+
+		<td align="right" style="width:110px;"><span class="login-1">上网账号:</span></td><td align="left" style="width:125px;"><input name="ctl00$MainContent$SSOACC" type="text" value="0000000000" maxlength="12" id="MainContent_SSOACC" style="width:120px;" /></td>
+
+	</tr><tr>
+
+		<td align="right"><span class="login-1">密码:</span></td><td align="left"><input name="ctl00$MainContent$SSOPWD" type="password" maxlength="16" id="MainContent_SSOPWD" style="width:120px;" /><br />
+
+                </td>
+
+	</tr><tr>
+
+		<td align="right" rowspan="2"><span class="login-1">验证码:</span></td><td align="right"><img id="MainContent_ImageCC" title="请输入此验证码" class="CheckCode" src="/CheckCode" align="middle" style="width:155px;" /></td>
+
+	</tr><tr>
+
+		<td align="left"><input name="ctl00$MainContent$TextBoxCC" type="text" value="c3d4" maxlength="4" id="MainContent_TextBoxCC" style="width:75px;" /></td>
+
+	</tr><tr>
+
+		<td align="center" colspan="2"><input type="submit" name="ctl00$MainContent$LoginBtn" value="登录" id="MainContent_LoginBtn" class="LoginBtn" /></td>
+
+	</tr><tr>
+
+		<td align="center" colspan="2">
+
+                    <p class="validation-summary-errors">
+
+                        用户未实名注册运营商上网账号!
+
+                    </p>
+
+                </td>
+
+	</tr>
+
+</table>
+
+    </main>
+
+
+
+            <hr />
+
+            <footer>
+
+                <p>&copy; 2026 - 河北善雅科技有限公司</p>
+
+                <p id="NLBInfo" style="font-size: 10px; color: aliceblue">MISPMPPORTAL02</p>
+
+            </footer>
+
+        </div>
+
+    </form>
+
+</body>
+
+</html>
+
