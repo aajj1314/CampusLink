@@ -120,7 +120,15 @@ def ensure_console() -> bool:
         return True                      # 本来就有控制台
 
     if not kernel32.AllocConsole():
+        # 分配失败：可能已附加了控制台（如从 bash/CI 里运行），
+        # 此时标准流通常是可用的 —— 流可用就当有控制台。
+        try:
+            if sys.stdout and sys.stdout.writable():
+                return True
+        except Exception:
+            pass
         return False
+
     kernel32.SetConsoleOutputCP(65001)   # utf-8，中文不乱码
     kernel32.SetConsoleCP(65001)
 
