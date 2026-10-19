@@ -64,3 +64,5 @@ build-cli4/
 packaging/_tmp_*.iss
 dist-cli5/
 build-cli5/
+dist-cli6/
+build-cli6/
