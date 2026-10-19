@@ -203,8 +203,12 @@ def main(argv: list[str] | None = None) -> int:
         out = _NullOut()
 
     cfg = CliConfig.load()
-    _trace(f"配置加载：{'存在' if cfg else '不存在（走首次配置）'}")
-    if cfg is None:
+    _trace(f"配置加载：{'存在' if cfg else '不存在'}")
+    # 首次/重新配置的**唯一判据**：json 是否存在且三字段齐全（学号/账号/密码）。
+    # 与网络状态无关——已联网也要先把账号存进 json，断网时才能静默使用。
+    if cfg is None or not cfg.complete():
+        if cfg is not None and not cfg.complete():
+            _trace("配置存在但字段不完整 → 重新配置")
         if silent:
             # 开机自启 + 未配置：不能交互，提示一次让用户手动完成
             _trace("静默启动未配置 → MessageBox 提示")

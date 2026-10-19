@@ -139,6 +139,24 @@ class TestExitCodes:
         code = H.main([])
         assert code == H.EXIT_AUTH_FAILED
 
+    def test_incomplete_config_reruns_setup(self, tmp_path, monkeypatch):
+        """
+        配置存在但缺字段（如只填了学号）→ 必须重新进配置。
+
+        用户拍板（2026-10-19）：首次/重新配置的唯一判据是
+        「json 里是否有账号密码学号」，与网络状态无关。
+        """
+        import io
+        cfg = H.CliConfig(student_id="s")       # 缺密码
+        cfg.save(tmp_path / "cli_config.json")
+        monkeypatch.setattr(H.paths, "data_dir", lambda: tmp_path)
+        monkeypatch.setattr(H, "check_already_online", lambda p, o: True)
+        monkeypatch.setattr(H.sys, "stdin", io.StringIO("s2\n\nrealpass\n"))
+        code = H.main([])
+        assert code == H.EXIT_OK
+        # 重配后的新凭据已落盘
+        assert H.CliConfig.load(tmp_path / "cli_config.json").password == "realpass"
+
     def test_silent_without_config_exits_setup_required(self, tmp_path,
                                                         monkeypatch):
         monkeypatch.setattr(H.paths, "data_dir", lambda: tmp_path)
