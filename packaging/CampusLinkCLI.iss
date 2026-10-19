@@ -22,7 +22,7 @@
 #define MyAppId "{{9E4B8D32-5C7F-4F3B-A069-3D2G8B0F6C15}"
 
 #define ProjectRoot SourcePath + ".."
-#define DistDir ProjectRoot + "\dist-cli\CampusLinkCLI"
+#define DistDir ProjectRoot + "\dist-cli7\CampusLinkCLI"
 
 [Setup]
 AppId={#MyAppId}
