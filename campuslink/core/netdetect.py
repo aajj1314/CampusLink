@@ -19,6 +19,7 @@ import re
 import socket
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import requests
@@ -291,10 +292,13 @@ def is_online(timeout: float = 5.0) -> bool:
     比 detect() 轻得多，自动重连的轮询循环用它。
     判据同样是 HTTP 内容，不是 TCP。
 
-    **多点保守判定（至少 2/3 通过才算在线）**：
+    **双点并行 + 保守判定（两点都通过才算在线）**：
     校园网普遍会把 gstatic 这类连通性检查域名**放行不劫持**（防止设备
     反复弹认证窗），未认证时 gstatic 也返回真 204 —— 单点判定会把
-    「未认证」误报成「已联网」。（与 CLI 分支同步的修复）
+    「未认证」误报成「已联网」（2026-10-19 实测踩坑：CLI 首次配置被
+    「已联网」短路跳过）。两个探测点**并行**发出（总耗时 = 最慢单点，
+    不叠加），**全部**返回正确内容才确认真的出了外网；宁可多走一次
+    认证，也不冒「误判在线跳过认证」的险。
     """
     probes = (
         ("http://connectivitycheck.gstatic.com/generate_204",
@@ -302,9 +306,12 @@ def is_online(timeout: float = 5.0) -> bool:
         ("http://www.msftconnecttest.com/connecttest.txt",
          lambda r: r.get("ok") and r["status"] == 200
                    and "Microsoft Connect Test" in r.get("body", "")),
-        ("http://detectportal.firefox.com/success.txt",
-         lambda r: r.get("ok") and r["status"] == 200
-                   and "success" in r.get("body", "")),
     )
-    clean = sum(1 for _url, okf in probes if okf(_touch(_url, timeout=timeout)))
-    return clean >= 2
+
+    def _probe(item):
+        url, okf = item
+        return okf(_touch(url, timeout=timeout))
+
+    with ThreadPoolExecutor(max_workers=len(probes)) as pool:
+        results = list(pool.map(_probe, probes))
+    return all(results)
