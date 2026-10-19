@@ -1,0 +1,3 @@
+RESULT=PASS
+ensure_console=True
+stdout=<_io.TextIOWrapper name=3 encoding='utf-8'>

@@ -53,3 +53,7 @@ dist2/
 build2/
 dist3/
 build3/
+dist-cli2/
+build-cli2/
+dist-cli/
+build-cli/

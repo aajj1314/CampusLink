@@ -134,14 +134,18 @@ def ensure_console() -> bool:
 
     import io
     import os
-    # windowed Python 的 sys.stdout/stdin 是 None，必须重建并接到底层句柄
+    # windowed Python 的 sys.stdout/stdin 是 None，必须重建并接到底层句柄。
+    # 注意 TextIOWrapper 没有 buffering 参数（那是 open() 的）——
+    # 传错会让重定向整体失败，进而 run_setup 拿到 None 崩溃（已踩坑）。
     try:
         sys.stdout = io.TextIOWrapper(
-            os.open("CONOUT$", os.O_WRONLY | os.O_TEXT),
-            encoding="utf-8", errors="replace", buffering=1, line_buffering=True)
+            io.FileIO(os.open("CONOUT$", os.O_WRONLY | os.O_TEXT), "w",
+                      closefd=True),
+            encoding="utf-8", errors="replace", line_buffering=True)
         sys.stderr = sys.stdout
         sys.stdin = io.TextIOWrapper(
-            os.open("CONIN$", os.O_RDONLY | os.O_TEXT),
+            io.FileIO(os.open("CONIN$", os.O_RDONLY | os.O_TEXT), "r",
+                      closefd=True),
             encoding="utf-8", errors="replace")
     except Exception:
         log.exception("控制台流重定向失败")
@@ -272,9 +276,10 @@ def main(argv: list[str] | None = None) -> int:
     # console=False：windowed 打包下没有 stdout，输出全走日志文件
     setup(console=False)
     out = _open_console_out(silent)
-    if out is None and not silent:
-        # 连控制台都分配不出来，只能靠日志了
-        out = sys.stderr
+    if out is None:
+        # 双保险：控制台分配失败时也不能让 out 是 None（windowed 下
+        # sys.stderr 也是 None）。所有 write 走空实现，输出全在日志里。
+        out = _NullOut()
 
     cfg = CliConfig.load()
     if cfg is None:
@@ -323,6 +328,16 @@ def check_already_online(profile: PortalProfile, out) -> bool:
             pass
         log.info("CLI 检测到已在线，跳过认证")
     return online
+
+
+class _NullOut:
+    """写什么都没反应的输出流 —— 控制台彻底不可用时的兜底。"""
+
+    def write(self, _t: str) -> None:
+        pass
+
+    def flush(self) -> None:
+        pass
 
 
 def _open_console_out(silent: bool):
