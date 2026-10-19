@@ -172,30 +172,23 @@ def run_auth(cfg: CliConfig, profile: PortalProfile, *,
 # ============================================================ 入口
 def _trace(msg: str) -> None:
     """
-    启动追踪：每个关键步骤落到 data_dir/cli_startup_trace.txt。
+    启动追踪：每个关键步骤记录一条 debug 日志。
 
-    无人值守程序「秒退」时没有控制台能看，这个文件是唯一的案发现场。
-    永远不抛异常——追踪器自己坏了也不能影响主流程。
+    日志文件（%APPDATA%\\CampusLink\\logs\\）是无人值守程序唯一
+    验证过可靠的诊断通道——独立 trace 文件曾出现静默不落盘（原因未明，
+    已被日志覆盖替代）。main 在 setup() 之后调用本函数，handler 已就绪。
     """
-    try:
-        from datetime import datetime
-        p = paths.data_dir() / "cli_startup_trace.txt"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%m-%d %H:%M:%S")
-        with p.open("a", encoding="utf-8") as fh:
-            fh.write(f"[{stamp}] {msg}\n")
-    except Exception:
-        pass
+    log.debug("TRACE %s", msg)
 
 
 def main(argv: list[str] | None = None) -> int:
     """CLI 主入口。返回进程退出码。"""
     silent = "--silent" in (argv or sys.argv[1:])
-    _trace(f"启动（silent={silent}，argv={argv or sys.argv[1:]}）")
 
-    # 日志永远开着：静默模式的失败全靠它。
-    # console=False：windowed 打包下没有 stdout，输出全走日志文件
+    # 日志永远开着：静默模式的失败全靠它。必须在最前面初始化，
+    # 之后所有 _trace/log 调用才有落点。
     setup(console=False)
+    _trace(f"启动（silent={silent}，argv={argv or sys.argv[1:]}）")
     out = _open_console_out(silent)
     if out is None:
         # 双保险：控制台分配失败时也不能让 out 是 None（windowed 下
