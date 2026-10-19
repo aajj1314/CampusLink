@@ -89,3 +89,58 @@ DELETE /api/v1/auth/credentials  （需已配对）
 - 02 文档正文同步更新（本提案记录即变更依据，待下次文档修订时并入）
 
 
+
+---
+
+# 提案 4：验证码形态扩展（字符型 → 算式型）
+
+> 提出时间：2026-10-17
+> 提出人：Desktop 侧（core）
+> 状态：**已实现**（`campuslink/core/captcha_math.py`、`ocr.recognize_math`、`ocr_backend` mode）
+> 背景文档：`docs/design/08-验证码改版应对.md`
+
+**背景**：2026-10-17 实测发现本门户的验证码已由「4 位字符」改为「算术表达式」，
+表单标签写明**输入计算结果**（例：`7加9=?` → 填 `16`）。原链路两处假设同时失效：
+`CHAR_RE = ^[0-9A-Za-z]+$` 会把含汉字运算符的结果整条丢弃；`build_payload()` 把识别文本
+原样提交，没有「算」这一步。
+
+## 变更 1：`PortalProfile` 新增字段 `captcha_mode`
+
+03 文档 §PortalProfile 追加：
+
+```
+captcha_mode: str = "text"     # "text" = 字符型（默认，保持既有行为）
+                               # "math" = 算式型，需填计算结果
+```
+
+**默认值是 `"text"`**，所以所有既有 profile 与既有测试的行为完全不变；
+只有显式声明 `"math"` 的门户才走新链路（`桂林信息科技学院.json` 已改）。
+
+## 变更 2：`OcrResult.source` 新增取值 `"local-math"`
+
+03 文档中 `source` 原取值 `"local" | "remote" | "manual"`，追加 `"local-math"`。
+语义差异：`"local"` 时 `text` 是**识别到的字符**；`"local-math"` 时 `text` 是**算出的答案**。
+调用方只消费 `text` 并原样提交，因此不需要改任何 Router/API 契约。
+
+## 变更 3：`OcrBackend.recognize()` 的空串语义保持不变
+
+算式求解失败时返回 `text=""`，与字符识别失败一致 —— 上层原本就把空串当作
+「这一张没认出来，换图重试」，契约无需改动。
+
+**重要**：不得用"猜一个答案"代替空串。猜错会提交错误答案，消耗登录尝试并可能触发风控；
+空串只会多换一张图。
+
+## 未改动
+
+- `02-API规范.md`：零改动（Router 只转发图片，不感知验证码形态）
+- `03` 的 `VisionTask` / `TaskResult` / `ImageMeta`：零改动
+- `OcrBackend` 协议签名：零改动（`mode` 是 `LocalDdddocrBackend` 的构造参数，不是协议参数）
+- 既有 44 条稳定版测试：零改动，全绿
+
+## 回归
+
+```
+pytest tests/ -q   →   223 passed
+```
+
+（既有 126 + 算式逻辑 69 + 算式链路 19 + 其他 9）

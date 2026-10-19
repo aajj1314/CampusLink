@@ -40,6 +40,10 @@ class AppConfig:
     minimize_to_tray: bool = True     # 点击最小化时进托盘
     close_to_tray: bool = True        # 点关闭按钮时进托盘而不是退出
     autostart: bool = False           # 开机自动启动
+    #: 验证码人工输入：每次登录弹出验证码图片，由用户手工填答案。
+    #: 算式型验证码的自动识别只有约 13% 正确率且错答会消耗登录尝试，
+    #: 所以对这类门户推荐打开。字符型门户保持关闭（自动识别 90%+）。
+    captcha_manual: bool = False
 
     # --- Router 视觉节点（默认关闭，不影响现有独立模式）---
     vision_node_enabled: bool = False  # 作为视觉节点连接 Router
@@ -65,6 +69,7 @@ class AppConfig:
                          ("start_minimized", bool), ("minimize_to_tray", bool),
                          ("close_to_tray", bool), ("autostart", bool),
                          ("vision_node_enabled", bool),
+                         ("captcha_manual", bool),
                          ("first_run_done", bool)):
             if key in clean:
                 try:

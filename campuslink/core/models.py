@@ -116,6 +116,11 @@ class PortalProfile:
     captcha_url: str = "auto"                 # auto = 从登录页里现找
     ocr_length: int = 4
     ocr_strategies: tuple[str, ...] = ("raw", "gray")
+    #: 验证码形态。
+    #:   "text" —— 传统的字母数字字符（默认，保持既有行为）
+    #:   "math" —— 算术表达式，要求填**计算结果**（本门户 2026-10 之后是这种）
+    #: 两种形态的识别链路完全不同：math 走 ocr.recognize_math() + captcha_math 求解。
+    captcha_mode: str = "text"
     max_retry: int = 8
     timeout: int = 10
     verify_ssl: bool = False

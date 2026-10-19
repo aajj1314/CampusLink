@@ -31,6 +31,7 @@ from ..logging_setup import get_logger, register_secret
 from .. import secrets
 from ..visionnode import NodeClient, NodeError, RouterWatcher, VisionNode
 from . import style
+from .captcha_dialog import DEFAULT_TIMEOUT, CaptchaDialog
 from .tray import TrayIcon
 from .worker import AuthWorker, MonitorWorker, WarmupWorker
 
@@ -242,8 +243,14 @@ class MainWindow(QMainWindow):
         self.ck_auto = QCheckBox("断线自动重新认证")
         self.ck_startup = QCheckBox("开机自动启动")
         self.ck_minimized = QCheckBox("启动时最小化到托盘")
+        self.ck_manual = QCheckBox("验证码人工输入（弹出图片手工填写，算式验证码推荐开启）")
+        self.ck_manual.setToolTip(
+            "开启后每次登录会弹出验证码图片，由你手工填答案。\n"
+            "算式型验证码的自动识别准确率很低，且填错会消耗登录次数，\n"
+            "识别模型达标前建议保持开启。")
 
-        for c in (self.ck_save, self.ck_auto, self.ck_startup, self.ck_minimized):
+        for c in (self.ck_save, self.ck_auto, self.ck_startup, self.ck_minimized,
+                  self.ck_manual):
             box.addWidget(c)
 
         self.lb_secret_status = QLabel(secrets.status_text())
@@ -387,6 +394,7 @@ class MainWindow(QMainWindow):
         self.ck_save.toggled.connect(self._on_save_toggled)
         self.ck_auto.toggled.connect(self._schedule_save)
         self.ck_minimized.toggled.connect(self._schedule_save)
+        self.ck_manual.toggled.connect(self._schedule_save)
         self.ck_startup.toggled.connect(self._on_startup_toggled)
 
         # ---- Router 视觉节点 ----
@@ -424,6 +432,7 @@ class MainWindow(QMainWindow):
         self.ck_save.setChecked(bool(pwd))
         self.ck_auto.setChecked(c.auto_connect)
         self.ck_minimized.setChecked(c.start_minimized)
+        self.ck_manual.setChecked(c.captcha_manual)
 
         self.ck_vision.setChecked(c.vision_node_enabled)
         self.ed_router.setText(c.router_url)
@@ -456,6 +465,7 @@ class MainWindow(QMainWindow):
         c.operator = self.cb_operator.currentText()
         c.auto_connect = self.ck_auto.isChecked()
         c.start_minimized = self.ck_minimized.isChecked()
+        c.captcha_manual = self.ck_manual.isChecked()
         c.vision_node_enabled = self.ck_vision.isChecked()
         c.router_url = self.ed_router.text().strip()
         c.profile_name = self.profile.name
@@ -717,6 +727,12 @@ class MainWindow(QMainWindow):
         self._auth.captcha_seen.connect(self._on_captcha)
         self._auth.result.connect(self._on_auth_result)
         self._auth.finished.connect(self._on_auth_thread_done)
+
+        # 人工输入兜底：托管模式下登录发生在 Router 侧，本地弹窗没意义，不启用
+        if self.cfg.captcha_manual and not self._managed:
+            self._auth.enable_manual_captcha(wait_s=DEFAULT_TIMEOUT + 10)
+            self._auth.manual_captcha.connect(self._on_manual_captcha)
+
         self._auth.start()
 
     def cancel_connect(self) -> None:
@@ -736,6 +752,34 @@ class MainWindow(QMainWindow):
     def _on_captcha(self, img: bytes, text: str) -> None:
         # 验证码本身不敏感，可以进日志；但只记识别结果，不记图片
         log.debug("本次验证码识别结果: %s", text or "(未识别出)")
+
+    def _on_manual_captcha(self, img: bytes, auto_text: str) -> None:
+        """
+        工作线程请求人工输入（运行在主线程，可以安全弹 UI）。
+
+        线程模型：worker 阻塞在 threading.Event 上等这里回话，
+        所以对话框必须是模态的、且不能拖太久（有 90s 自动跳过兜底）。
+        """
+        if self._auth is None or not self._auth.isRunning():
+            # 线程已经结束了（比如用户点了取消），直接交回 None 放行
+            if self._auth is not None:
+                self._auth.submit_answer(None)
+            return
+        dlg = CaptchaDialog(
+            img, auto_text,
+            math_mode=(getattr(self.profile, "captcha_mode", "text") == "math"),
+            timeout_s=DEFAULT_TIMEOUT,
+            cancel_fn=lambda: bool(self._auth and self._auth.cancelled),
+            parent=self,
+        )
+        try:
+            answer = dlg.exec_answer()
+        except Exception:
+            log.exception("验证码对话框异常")
+            answer = None
+        # 对话框关了但线程可能刚好结束：submit_answer 只是 set Event，永远安全
+        if self._auth is not None:
+            self._auth.submit_answer(answer)
 
     def _on_auth_result(self, res: LoginResult) -> None:
         if res.ok:

@@ -39,12 +39,25 @@ class LocalDdddocrBackend:
     recognize 返回的 `text` / `detail` / `confidence` 与旧的
     `ocr.recognize(...)` + `ocr.confidence(...)` 完全一致 ——
     `tests/test_ocr_backend.py` 逐字段验证。
+
+    `mode` 决定走哪条链路：
+        "text" —— 只做字符识别，行为与历史版本**逐字段一致**（默认值）
+        "math" —— 只做算式求解，解不出就返回空串（让上层换图）
+    之所以默认 "text"：既有 44 条稳定版测试与字符型门户都依赖原行为，
+    新形态必须由 profile 显式声明，不能靠猜。
     """
+
+    def __init__(self, mode: str = "text"):
+        self._mode = mode if mode in ("text", "math") else "text"
 
     def recognize(self, image: bytes, *, length: int,
                   strategies: tuple[str, ...]) -> OcrResult:
         import time as _t
         started = _t.monotonic()
+
+        if self._mode == "math":
+            return self._recognize_math(image, started)
+
         from . import ocr
         text, detail = ocr.recognize(image, strategies=strategies, length=length)
         confidence = ocr.confidence(text, detail)
@@ -55,3 +68,24 @@ class LocalDdddocrBackend:
             source="local",
             elapsed_ms=max(0, int((_t.monotonic() - started) * 1000)),
         )
+
+    def _recognize_math(self, image: bytes, started: float) -> OcrResult:
+        """
+        算式验证码：返回的 text 是**计算结果**，不是识别出来的算式原文。
+
+        求解失败时返回空 text —— 上层（Authenticator）看到空串会换一张图
+        重试，而不是拿一个猜出来的数字去提交。这个区分很重要：
+        提交错误答案会白白消耗一次登录尝试。
+        """
+        import time as _t
+        from . import ocr
+
+        answer, detail = ocr.recognize_math(image)
+        return OcrResult(
+            text=answer,
+            confidence=1.0 if answer else 0.0,
+            detail=detail,
+            source="local-math",
+            elapsed_ms=max(0, int((_t.monotonic() - started) * 1000)),
+        )
+

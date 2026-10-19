@@ -35,6 +35,12 @@ class AuthWorker(QThread):
     progress = Signal(str)            # 一句可直接显示的中文状态
     result = Signal(object)           # LoginResult
     captcha_seen = Signal(bytes, str)  # (验证码图片, 识别结果)，界面可以显示出来
+    #: 人工输入请求：工作线程 → 主线程弹对话框。参数 (图片, 自动识别结果)。
+    manual_captcha = Signal(bytes, str)
+
+    #: 默认等待用户输入的时长。要略大于对话框自身的超时，
+    #: 保证「对话框先超时返回 None」这条正常路径不会先被 Event.wait 掐断。
+    MANUAL_WAIT = 100
 
     def __init__(self, authenticator: Authenticator, credentials: Credentials,
                  parent=None):
@@ -42,22 +48,61 @@ class AuthWorker(QThread):
         self._auth = authenticator
         self._cred = credentials
         self._stop = threading.Event()
+        # --- 人工输入问答的跨线程通道 ---
+        self._ask_enabled = False
+        self._answer_evt = threading.Event()
+        self._answer: "str | None" = None
+        self._manual_wait = self.MANUAL_WAIT
 
     def cancel(self) -> None:
         """请求中止。认证循环会在下一个检查点退出，通常 1 秒内。"""
         self._stop.set()
+        # 若正阻塞在等人工输入，立刻放行（放行结果是 None → 换图 → 检查点退出）
+        self._answer_evt.set()
 
     @property
     def cancelled(self) -> bool:
         return self._stop.is_set()
 
+    def enable_manual_captcha(self, wait_s: int = MANUAL_WAIT) -> None:
+        """打开「人工输入验证码」。必须在 start() 之前调用。"""
+        self._ask_enabled = True
+        # 下限 1s：真实场景建议 ≥15s（对话框自身 90s 超时兜底），
+        # 但这里不硬卡下限 —— 测试和特殊场景需要更短的超时。
+        self._manual_wait = max(1, int(wait_s))
+
+    def submit_answer(self, text: "str | None") -> None:
+        """主线程把对话框结果交回来（None = 跳过这张）。"""
+        self._answer = text
+        self._answer_evt.set()
+
+    def _make_ask(self):
+        """
+        构造传给 core 的 ask_captcha 回调。
+
+        运行在**工作线程**：发信号让主线程弹模态对话框，
+        然后阻塞等主线程把答案交回来。这是唯一安全的跨线程问答方式 ——
+        Qt 的 UI 只能在主线程动，而 core 的 login 是同步阻塞的。
+        """
+        def _ask(img: bytes, auto_text: str) -> "str | None":
+            self._answer = None
+            self._answer_evt.clear()
+            self.manual_captcha.emit(img, auto_text)
+            if not self._answer_evt.wait(self._manual_wait):
+                log.info("等待人工输入超时（%ss），按跳过处理", self._manual_wait)
+                return None
+            return self._answer
+        return _ask
+
     def run(self) -> None:
+        ask = self._make_ask() if self._ask_enabled else None
         try:
             res: LoginResult = self._auth.login(
                 self._cred,
                 cancel=self._stop.is_set,
                 on_progress=self.progress.emit,
                 on_captcha=lambda img, text: self.captcha_seen.emit(img, text),
+                ask_captcha=ask,
             )
         except Exception as exc:                      # 兜底，绝不让线程崩掉
             log.exception("认证线程异常")

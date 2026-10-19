@@ -26,6 +26,8 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from . import captcha_math
+
 # 只允许字母数字进入投票 —— 排除掉模型幻觉出来的汉字和符号
 CHAR_RE = re.compile(r"^[0-9A-Za-z]+$")
 
@@ -198,3 +200,206 @@ def confidence(best: str, detail: dict[str, str]) -> float:
         return 0.0
     needle = best.lower()
     return sum(1 for v in valid if v.lower() == needle) / len(valid)
+
+
+# ================================================================== 算式验证码
+#
+# 2026-10 起本门户的验证码改版了：不再是 4 位字符，而是
+#     6乘12=?    7加9=?    28÷4=?    57-0=?
+# 表单标签写明「输入计算结果」，所以整条链路要的是**答案**而不是识别文本。
+#
+# 这种图的难点（实测 30 张样本得出）：
+#   · 主字符颜色随机（青/蓝/绿/紫/灰都有），亮度和饱和度都跨很大范围
+#   · 干扰线是**深色**的细斜线，直接穿过字符，去线必伤字
+#   · 干扰字符是细笔画小字，比主字符淡，但也在 V<190 内
+#   · 字符本身带随机倾斜，同一行也会互相压边
+#
+# 因此这里不做「一次识别整行」—— 整行喂 ddddocr 会把 `=?` 当成操作数的一部分
+# （实测 `8加4=?` 被读成 '8加42'，`6乘1=?` 被读成 '6乘79'），答案必然算错。
+# 改成：按连通域切成单字块，逐块识别，再交给 captcha_math 解析计算。
+#
+# 可靠性策略：多种预处理 × 双模型投票，票数不够就返回空串。
+# **返回空串 = 让上层换一张图**，绝不提交一个猜出来的答案 ——
+# 猜错会消耗一次登录尝试，还可能触发门户的风控。
+
+#: 前景判定：到白色点的欧氏距离。主字符离白远，干扰字离白近。
+_MATH_DIST_THRESHOLDS: tuple[int, ...] = (140, 152, 165)
+
+#: 算式验证码只可能出现这些字符。
+#: 限定字符集是本方案里**性价比最高的一招**：不加限制时 ddddocr 会把
+#: `乘` 输出成 '和云弈'、把无关笔画输出成 'u'/'l'/'神'，加了之后这些幻觉
+#: 全被挡在门外（实测解出率 23% → 33%，且文本干净很多）。
+MATH_CHARSET = "0123456789加减乘除÷×+-"
+
+_math_ocr_lock = threading.Lock()
+_math_ocr_cache: dict[bool, object] = {}
+
+
+def get_math_ocr(beta: bool = False):
+    """
+    取用于算式验证码的 OCR 实例。
+
+    **必须是独立实例**：`set_ranges` 是实例级状态，如果直接在 `get_ocr()`
+    返回的共享实例上调，字符型验证码的识别行为会被一起改掉（那是既有
+    44 条测试覆盖的路径，不能动）。
+    """
+    with _math_ocr_lock:
+        if beta not in _math_ocr_cache:
+            import ddddocr
+
+            inst = ddddocr.DdddOcr(beta=beta, show_ad=False)
+            inst.set_ranges(MATH_CHARSET)
+            _math_ocr_cache[beta] = inst
+        return _math_ocr_cache[beta]
+
+
+def _math_foreground(img_bytes: bytes, dist_thr: int, blur: int = 0) -> np.ndarray | None:
+    """
+    生成算式验证码的前景 mask。
+
+    用「到白色点的距离」而不是亮度/饱和度：主字符虽然是深色，但颜色跨度大
+    （深青、深蓝、深紫的 HSV 值差别很大），而它们共同的特征是**离白很远**。
+    """
+    if not img_bytes:
+        return None
+    try:
+        img = _decode(img_bytes)
+    except Exception:
+        # cv2.imdecode 对空/损坏的 buffer 会抛 C++ 断言，不是 Python 异常，
+        # 只有包一层才兜得住
+        return None
+    if img is None:
+        return None
+    if blur:
+        img = cv2.medianBlur(img, blur)
+    diff = 255.0 - img.astype(np.float32)
+    dist = np.sqrt((diff ** 2).sum(axis=2))
+    mask = (dist > dist_thr).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    return mask
+
+
+def _math_blocks(mask: np.ndarray,
+                 min_h: int = 16, min_area: int = 40) -> list[tuple[int, int, int, int]]:
+    """
+    把 mask 切成单字块，按从左到右返回 (x, y, w, h)。
+
+    过滤条件只用「高度」和「面积」：主字符高 28~45px，干扰小字高 15~25px，
+    细干扰线高度往往 < 6px。阈值取 16 是两者的分界带的下沿 ——
+    宁可多留几个候选块（噪声由解析器兜），也别把真字符漏掉。
+    """
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats(mask, 8)
+    boxes = []
+    for i in range(1, n):
+        x, y, w, h, a = stats[i]
+        if h >= min_h and a >= min_area:
+            boxes.append((x, y, w, h))
+    boxes.sort(key=lambda b: b[0])
+
+    # 同一字符被开运算断成几截时，x 区间重叠的就并回去
+    merged: list[tuple[int, int, int, int]] = []
+    for x, y, w, h in boxes:
+        if merged:
+            px, py, pw, ph = merged[-1]
+            if x < px + pw - 2:
+                nx0, ny0 = min(px, x), min(py, y)
+                nx1, ny1 = max(px + pw, x + w), max(py + ph, y + h)
+                merged[-1] = (nx0, ny0, nx1 - nx0, ny1 - ny0)
+                continue
+        merged.append((x, y, w, h))
+    return merged
+
+
+def _math_glyph(mask: np.ndarray, box: tuple[int, int, int, int],
+                pad: int = 6, scale: int = 4) -> bytes:
+    """把单个字符块裁出来，做成 ddddocr 喜欢的「白底黑字 + 四周留白」。"""
+    x, y, w, h = box
+    sub = (1 - mask[y:y + h, x:x + w]) * 255
+    sub = cv2.copyMakeBorder(sub, pad, pad, pad, pad,
+                             cv2.BORDER_CONSTANT, value=255)
+    sub = cv2.resize(sub, (sub.shape[1] * scale, sub.shape[0] * scale),
+                     interpolation=cv2.INTER_LANCZOS4)
+    return _encode(sub)
+
+
+def recognize_math(
+    img_bytes: bytes,
+    *,
+    min_votes: int = 2,
+    min_block_h: int = 18,
+    dist_thresholds: tuple[int, ...] = _MATH_DIST_THRESHOLDS,
+) -> tuple[str, dict[str, str]]:
+    """
+    识别算式验证码并**算出答案**。
+
+    返回 (answer, detail)
+        answer : 答案字符串（如 '7'）；无法可靠求解时为空字符串
+        detail : 每个预处理变体的「识别文本 → 答案」，只用于排障
+
+    为什么要 min_votes：
+        单次识别会错（`1`→`7`、`乘`→'和云弈' 之类）。让多个预处理 ×
+        两个模型各自独立给出答案再投票，一致票数不足就放弃这一张。
+        放弃比猜错好 —— 猜错要付一次登录尝试的代价，还可能触发门户风控。
+
+    已知局限（实测 30 张真实样本）：
+        这套启发式能解出约 1/3 的图，所以必须靠 `Authenticator` 的多轮
+        重试兜底（max_retry=8 时整体成功率约 95%），或者改用人工输入。
+        要稳定 90%+ 得靠专用模型，见 docs/design/08-验证码改版应对.md。
+
+    幂等性：纯函数，不写文件、不缓存图片（验证码图属敏感物料，禁落盘）。
+    """
+    detail: dict[str, str] = {}
+    std = get_math_ocr(False)
+    try:
+        beta = get_math_ocr(True)
+    except Exception:            # beta 模型缺失时降级，不影响主流程
+        beta = None
+
+    variants: list[tuple[str, int, int]] = []
+    for d in dist_thresholds:
+        variants.append((f"bin{d}", d, 0))
+    variants.append((f"bin{dist_thresholds[1]}blur", dist_thresholds[1], 3))
+
+    votes: dict[str, list[str]] = {}     # 答案 -> 贡献它的变体名
+    for name, d, blur in variants:
+        mask = _math_foreground(img_bytes, d, blur)
+        if mask is None:
+            detail[name] = "<decode-failed>"
+            continue
+        boxes = _math_blocks(mask, min_h=min_block_h)
+        if not boxes:
+            detail[name] = "<no-block>"
+            continue
+
+        texts: list[str] = []
+        for box in boxes:
+            glyph = _math_glyph(mask, box)
+            for eng in (std, beta):
+                if eng is None:
+                    continue
+                try:
+                    t = (eng.classification(glyph) or "").strip()
+                except Exception:
+                    continue
+                if t:
+                    texts.append(t)
+                    break            # 单字块取第一个能出结果的模型即可
+
+        joined = "".join(texts)
+        # 第二个操作数恒为 1 位；尾部的 `=?` 常被认成数字，必须截断
+        answer = captcha_math.solve(joined, max_b_digits=1)
+        detail[name] = f"{joined} -> {answer}" if joined else "<empty>"
+        if answer is not None:
+            votes.setdefault(answer, []).append(name)
+
+    if not votes:
+        return "", detail
+
+    best_answer, who = max(votes.items(), key=lambda kv: len(kv[1]))
+    if len(who) < min_votes:
+        # 票数不足：当作没认出来，让上层换图，不要赌
+        detail["_rejected"] = f"{best_answer} (only {len(who)} vote)"
+        return "", detail
+
+    detail["_answer"] = best_answer
+    return best_answer, detail

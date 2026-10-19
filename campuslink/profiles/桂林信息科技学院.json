@@ -1,6 +1,6 @@
 {
   "name": "桂林信息科技学院",
-  "note": "多运营商接入管理平台统一认证系统（河北善雅科技 / 润建股份提供服务）。ASP.NET WebForms，无前端加密，密码明文提交。字段名取自 2026-10-14 实测。",
+  "note": "多运营商接入管理平台统一认证系统（河北善雅科技 / 润建股份提供服务）。ASP.NET WebForms，无前端加密，密码明文提交。字段名取自 2026-10-14 实测。2026-10-17 复测发现验证码已改版：由 4 位字符改为算术表达式（6乘12=? / 28÷4=?），表单标签写明「输入计算结果」，故 captcha_mode 设为 math。验证码图片地址为 /ACaptcha.ashx，尺寸 200x60。",
 
   "portal_url": "http://10.6.6.6/login",
   "portal_candidates": [
@@ -24,6 +24,7 @@
   },
 
   "captcha_url": "auto",
+  "captcha_mode": "math",
   "ocr_length": 4,
   "ocr_strategies": ["raw", "gray"],
   "max_retry": 8,

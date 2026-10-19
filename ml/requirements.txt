@@ -1,0 +1,21 @@
+# CampusLink 算式验证码模型 —— 训练环境依赖
+#
+# 安装（Linux，推荐 CUDA 机器）：
+#   python3 -m venv .venv && . .venv/bin/activate
+#   pip install -U pip
+#   pip install -r ml/requirements.txt
+#
+# 纯 CPU 也能训，就是慢些（1000 张 60 轮大约 40~90 分钟）。
+
+# ---- 训练必需 ----
+torch>=2.1            # 训练；装 GPU 版请按 https://pytorch.org 选对应 CUDA 的 index-url
+numpy>=1.24
+Pillow>=10.0
+
+# ---- 导出后评估必需（evaluate.py / export_onnx.py 的一致性复核）----
+onnxruntime>=1.16
+
+# ---- 可选：只有想用 autolabel.py 做预标注才需要 ----
+# 预标注能省不少打字，但不是必须的（label_web.py 纯标准库，无依赖）
+# ddddocr>=1.5
+# opencv-python>=4.8

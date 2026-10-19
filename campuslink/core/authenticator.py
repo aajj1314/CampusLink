@@ -30,6 +30,11 @@ from .portal import PortalClient, friendly_error, make_session
 ProgressFn = Callable[[str], None]
 CancelFn = Callable[[], bool]
 CaptchaFn = Callable[[bytes, str], None]
+#: 向用户要验证码答案的钩子：参数是 (验证码图片, 自动识别结果)，
+#: 返回用户输入的答案；返回 None / 空串表示「这张不要了，换一张」。
+#: 抛 Cancelled 表示整个登录中止。**策略由调用方决定** —— 想每次都问、
+#: 还是只在自动识别失败时才问，都在回调内部实现，core 不感知。
+AskCaptchaFn = Callable[[bytes, str], "str | None"]
 
 #: 重试之间的间隔。不能太短 —— 该门户的验证码像按时间种子生成，
 #: 太快重试可能拿到同一张，等于拿同一个错答案再提交一遍。
@@ -55,9 +60,15 @@ class Authenticator:
         self._ocr_backend = ocr_backend
 
     def _backend(self) -> OcrBackend:
-        """取 OCR 后端；未注入时惰性构造本地实现（默认行为与旧版一致）。"""
+        """
+        取 OCR 后端；未注入时惰性构造本地实现。
+
+        mode 由 profile 声明：字符型门户走 "text"（与旧版逐字段一致），
+        算式型门户走 "math"（识别后**算出答案**再提交）。
+        """
         if self._ocr_backend is None:
-            self._ocr_backend = LocalDdddocrBackend()
+            mode = getattr(self.profile, "captcha_mode", "text")
+            self._ocr_backend = LocalDdddocrBackend(mode=mode)
         return self._ocr_backend
 
     # ------------------------------------------------------------ 对外
@@ -99,6 +110,7 @@ class Authenticator:
         cancel: CancelFn | None = None,
         on_progress: ProgressFn | None = None,
         on_captcha: CaptchaFn | None = None,
+        ask_captcha: "AskCaptchaFn | None" = None,
     ) -> LoginResult:
         """
         执行认证。任何异常都会被翻译成 LoginResult，不往外抛。
@@ -106,6 +118,11 @@ class Authenticator:
         cancel       : 返回 True 表示用户要求中止
         on_progress  : 收到一句可直接显示的中文状态
         on_captcha   : 每次拿到验证码时回调 (图片字节, 识别结果)，GUI 可以显示出来
+        ask_captcha  : 人工输入钩子。识别完成后调用 (图片, 自动识别结果)，
+                       返回非空文本则**覆盖**自动识别结果去提交；返回 None/空串
+                       则按原逻辑走（识别失败就换图，识别成功就用自动结果）。
+                       注意：这是阻塞调用（GUI 侧要弹模态框等用户输入），
+                       会占用重试间隔，所以回调内部应自带超时。
         """
         say = _Say(on_progress)
         aborted = _Cancel(cancel)
@@ -196,9 +213,35 @@ class Authenticator:
                     say("验证码没认出来，换一张重试")
                     time.sleep(RETRY_DELAY)
                     continue
+
+                # --- 3.5) 人工输入兜底：策略由回调决定，core 只负责接线 ---
+                if ask_captcha is not None:
+                    if aborted:
+                        return _cancelled()
+                    try:
+                        manual = ask_captcha(img, captcha_text)
+                    except Cancelled:
+                        return _cancelled()
+                    except Exception:
+                        manual = None          # 钩子出错不能拖垮登录
+                    if manual and manual.strip():
+                        captcha_text = manual.strip()
+                        say("已采用人工输入的验证码答案")
+                    elif not captcha_text:
+                        # 自动没认出来、用户也没给答案 → 走换图
+                        say("验证码没认出来，换一张重试")
+                        time.sleep(RETRY_DELAY)
+                        continue
+
                 conf = ocr_result.confidence
                 if self.verbose:
-                    say(f"验证码识别为 {captcha_text}（置信度 {conf:.0%}）")
+                    # 算式形态下 captcha_text 是**计算结果**，光看数字没意义，
+                    # 把识别到的算式一起打出来才排得动故障
+                    expr = ocr_result.detail.get("_expr")
+                    if expr:
+                        say(f"验证码算式 {expr}=? → 填 {captcha_text}")
+                    else:
+                        say(f"验证码识别为 {captcha_text}（置信度 {conf:.0%}）")
 
             if aborted:
                 return _cancelled()

@@ -28,3 +28,17 @@ CampusLink.rar
 # ------------------------------------------------------------------ 运行时产物
 *.log
 logs/
+
+# ------------------------------------------------------------------ ML 训练数据与模型
+# 验证码样本属敏感物料，训练产物体积大，均不入库
+ml/dataset/raw/
+ml/dataset/test_raw/
+ml/dataset/labels/
+ml/dataset/preprocess_samples/
+ml/dataset/tmp/
+ml/dataset/*.csv
+ml/models/
+ml/dataset.zip
+
+# ------------------------------------------------------------------ 历史数据目录（Linux 侧传回的副本，敏感物料不入库）
+dataset/
