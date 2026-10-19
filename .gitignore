@@ -37,7 +37,10 @@ ml/dataset/labels/
 ml/dataset/preprocess_samples/
 ml/dataset/tmp/
 ml/dataset/*.csv
-ml/models/
+# 模型权重通过 GitHub Release 分发（见 ml/models/README.md），不入 git；
+# 仅保留本说明文件
+ml/models/*
+!ml/models/README.md
 ml/dataset.zip
 
 # ml2/：处理版图（对比度增强）独立模型线，数据集与产物同样不入库
