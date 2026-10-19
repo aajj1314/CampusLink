@@ -268,9 +268,28 @@ def run_auth(cfg: CliConfig, profile: PortalProfile, *,
 
 
 # ============================================================ 入口
+def _trace(msg: str) -> None:
+    """
+    启动追踪：每个关键步骤落到 data_dir/cli_startup_trace.txt。
+
+    无人值守程序「秒退」时没有控制台能看，这个文件是唯一的案发现场。
+    永远不抛异常——追踪器自己坏了也不能影响主流程。
+    """
+    try:
+        from datetime import datetime
+        p = paths.data_dir() / "cli_startup_trace.txt"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%m-%d %H:%M:%S")
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(f"[{stamp}] {msg}\n")
+    except Exception:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI 主入口。返回进程退出码。"""
     silent = "--silent" in (argv or sys.argv[1:])
+    _trace(f"启动（silent={silent}，argv={argv or sys.argv[1:]}）")
 
     # 日志永远开着：静默模式的失败全靠它。
     # console=False：windowed 打包下没有 stdout，输出全走日志文件
@@ -282,14 +301,18 @@ def main(argv: list[str] | None = None) -> int:
         out = _NullOut()
 
     cfg = CliConfig.load()
+    _trace(f"配置加载：{'存在' if cfg else '不存在（走首次配置）'}")
     if cfg is None:
         if silent:
             # 开机自启 + 未配置：不能交互，提示一次让用户手动完成
+            _trace("静默启动未配置 → MessageBox 提示")
             _messagebox("CampusLink 尚未完成初始配置\n"
                         "请双击桌面图标，按提示输入账号信息。")
             log.error("静默启动时发现未配置，已提示用户")
             return EXIT_SETUP_REQUIRED
+        _trace("进入首次配置交互")
         cfg = run_setup(out)
+        _trace(f"首次配置结果：{'成功' if cfg else '失败/中断'}")
         if cfg is None:
             return EXIT_BAD_CONFIG
         # 配置完成，检查是否已在线（首次装好往往本来就联网了）
@@ -302,16 +325,28 @@ def main(argv: list[str] | None = None) -> int:
     from .logging_setup import register_secret
     register_secret(cfg.password)      # 密码不进日志（虽然明文存 json）
 
-    profile = profiles.load_profile(cfg.profile_name or DEFAULT_PROFILE_NAME)
+    try:
+        profile = profiles.load_profile(cfg.profile_name or DEFAULT_PROFILE_NAME)
+        _trace(f"档案加载：{profile.name}（mode={profile.captcha_mode}）")
+    except Exception as exc:
+        _trace(f"档案加载失败：{exc!r}")
+        log.exception("档案加载失败")
+        out.write(f"✗ 门户档案加载失败：{exc}")
+        _pause()
+        return EXIT_BAD_CONFIG
 
     if check_already_online(profile, out):
+        _trace("已在线，跳过认证")
         return EXIT_OK
 
+    _trace("开始认证")
     ok = run_auth(cfg, profile, verbose=not silent, out=out)
+    _trace(f"认证结束：{'成功' if ok else '失败'}")
 
     if not silent:
         out.write("\n" + ("✓ 完成" if ok else "✗ 认证失败，详情见日志"))
         _pause()
+    _trace(f"退出码 {EXIT_OK if ok else EXIT_AUTH_FAILED}")
     return EXIT_OK if ok else EXIT_AUTH_FAILED
 
 
