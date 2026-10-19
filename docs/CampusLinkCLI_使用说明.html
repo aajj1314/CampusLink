@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CampusLink 校园网自动认证 · 使用说明</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #f5f6f8; color: #2b2b2b; line-height: 1.75;
+    max-width: 780px; margin: 0 auto; padding: 24px 16px 60px;
+  }
+  header {
+    background: linear-gradient(135deg, #1e5aa8, #3b82c4);
+    color: #fff; border-radius: 12px; padding: 28px 24px; margin-bottom: 24px;
+  }
+  header h1 { font-size: 24px; margin-bottom: 8px; }
+  header p { opacity: .92; font-size: 14px; }
+  h2 {
+    font-size: 18px; color: #1e5aa8; margin: 32px 0 12px;
+    padding-left: 10px; border-left: 4px solid #1e5aa8;
+  }
+  .card {
+    background: #fff; border-radius: 10px; padding: 18px 20px;
+    margin-bottom: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.06);
+  }
+  .step { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 14px; }
+  .step-num {
+    flex: none; width: 26px; height: 26px; border-radius: 50%;
+    background: #1e5aa8; color: #fff; font-weight: bold;
+    display: flex; align-items: center; justify-content: center; font-size: 14px;
+    margin-top: 2px;
+  }
+  code, .path {
+    background: #eef2f7; border-radius: 4px; padding: 1px 6px;
+    font-family: Consolas, monospace; font-size: 13px; word-break: break-all;
+  }
+  .warn {
+    background: #fff7e6; border-left: 4px solid #e6a23c;
+    border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 14px;
+  }
+  .ok {
+    background: #f0f9eb; border-left: 4px solid #67c23a;
+    border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 14px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { border: 1px solid #e4e7ed; padding: 8px 10px; text-align: left; }
+  th { background: #f5f7fa; }
+  .qa { margin-bottom: 16px; }
+  .qa .q { font-weight: bold; color: #1e5aa8; }
+  .qa .a { margin-top: 4px; }
+  footer { margin-top: 40px; font-size: 12px; color: #999; text-align: center; }
+  ul { padding-left: 22px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>CampusLink 校园网自动认证</h1>
+  <p>断网了？双击桌面的「CampusLink 认证」，输一次账号，它帮你连。</p>
+</header>
+
+<h2>一、这是什么</h2>
+<div class="card">
+  <p>一个小工具，装一次就不用管了：</p>
+  <ul>
+    <li><b>断网后自动重新登录校园网</b>——不用再打开浏览器输账号密码</li>
+    <li>验证码是它<b>自动识别</b>的（内置了专门训练的识别模型），你不用管</li>
+    <li>可以设置<b>开机自动连</b>，电脑开完机网就是通的</li>
+  </ul>
+  <p style="margin-top:8px">适用于桂林信息科技学院校园网（10.6.6.6 门户）。其他学校用不了。</p>
+</div>
+
+<h2>二、安装（只需一次）</h2>
+<div class="card">
+  <div class="step"><div class="step-num">1</div><div>拿到安装包 <code>CampusLinkCLI_Setup_v2.0.0.exe</code>（约 47 MB）</div></div>
+  <div class="step"><div class="step-num">2</div><div>双击安装。如果 Windows 弹蓝色提示框「Windows 已保护你的电脑」，点 <b>「更多信息」→「仍要运行」</b>（这是软件没买数字签名的正常提示，不是病毒）</div></div>
+  <div class="step"><div class="step-num">3</div><div>一路「下一步」。安装时两个勾选项都建议保持勾选：<b>桌面快捷方式</b>和<b>开机自动认证</b></div></div>
+  <div class="step"><div class="step-num">4</div><div>装完后桌面上会有 <b>「CampusLink 认证」</b> 和 <b>「CampusLink 配置」</b> 两个图标</div></div>
+  <div class="warn">⚠️ 如果杀毒软件拦截，选择「允许」或把安装目录加入信任。软件不含联网上传功能，只和你学校的认证服务器通信。</div>
+</div>
+
+<h2>三、首次配置（输入账号，只需一次）</h2>
+<div class="card">
+  <div class="step"><div class="step-num">1</div><div>双击桌面 <b>「CampusLink 认证」</b>，会弹出一个黑色窗口</div></div>
+  <div class="step"><div class="step-num">2</div><div>按提示依次输入：<b>学号</b> → <b>上网账号</b>（不清楚就和学号填一样）→ <b>密码</b></div></div>
+  <div class="warn">⚠️ 输密码时屏幕上<b>什么都不显示</b>，是正常的（防偷看），盲打完回车就行。</div>
+  <div class="step"><div class="step-num">3</div><div>等它自动认证。看到 <b>「✓ 完成」</b> 就成功了，窗口 2 秒后自动关闭</div></div>
+  <div class="ok">✅ 到这里就配置完了。账号密码已保存在你电脑本地，以后断网<b>再也不会问你</b>。</div>
+</div>
+
+<h2>四、日常使用</h2>
+<div class="card">
+  <table>
+    <tr><th>情况</th><th>操作</th></tr>
+    <tr><td>断网了，上不去网</td><td>双击桌面 <b>「CampusLink 认证」</b>，等它自动连上</td></tr>
+    <tr><td>想换账号 / 改密码</td><td>双击桌面 <b>「CampusLink 配置」</b>，重新输一遍三个字段</td></tr>
+    <tr><td>电脑刚开机</td><td>什么都不用做（装的时候勾了「开机自动认证」就全自动）</td></tr>
+  </table>
+</div>
+
+<h2>五、常见问题</h2>
+<div class="card">
+  <div class="qa"><p class="q">Q：双击后黑窗一闪就没了？</p>
+  <p class="a">A：说明它在跑但很快结束了。看一眼是不是已经联网了（能打开网页就没问题）；如果还上不了网，看下面第 6 节找日志发给帮你装软件的人。</p></div>
+
+  <div class="qa"><p class="q">Q：提示「账号未实名注册，请带证件到信息中心办理」？</p>
+  <p class="a">A：这是学校门户的原话——你的校园网账号还没实名。<b>带证件去信息中心办一下</b>就能用，软件没法绕过。</p></div>
+
+  <div class="qa"><p class="q">Q：提示密码错误？</p>
+  <p class="a">A：双击「CampusLink 配置」重新输。注意上网账号和密码是<b>校园网认证的账号</b>（运营商给你的那个），不一定是学校统一身份认证的密码。忘了可以打运营商客服或去营业厅重置。</p></div>
+
+  <div class="qa"><p class="q">Q：黑窗里出现「换图」「重试」很多次？</p>
+  <p class="a">A：验证码识别没把握时它会自动换一张再来（最多 8 次），这是正常自我保护。偶尔一次失败再点一次就行；<b>每次都失败</b>把黑窗截图发给帮你装软件的人。</p></div>
+
+  <div class="qa"><p class="q">Q：密码安全吗？</p>
+  <p class="a">A：密码保存在<b>你自己电脑</b>的一个文件里（路径：<span class="path">%APPDATA%\CampusLink\cli_config.json</span>），不上传到任何服务器。自己的电脑、自己用，没有泄露风险；但别把这个文件发给别人。</p></div>
+
+  <div class="qa"><p class="q">Q：开机没有自动连？</p>
+  <p class="a">A：开机自启可能在安装时没勾。手动补：<code>Win+R</code> 输入 <code>shell:startup</code> 回车，把 <code>F:\Program Files\CampusLinkCLI\silent_run.vbs</code> 的快捷方式放进去（或者叫帮你装的人处理）。</p></div>
+</div>
+
+<h2>六、出问题了怎么办</h2>
+<div class="card">
+  <p>两份「病历本」会自动记录一切，出问题时<b>把这两个文件发给帮你装软件的人</b>：</p>
+  <ul>
+    <li>运行日志：<span class="path">%APPDATA%\CampusLink\logs\campuslink.log</span></li>
+    <li>账号配置（改账号密码可直接编辑这个文件）：<span class="path">%APPDATA%\CampusLink\cli_config.json</span></li>
+  </ul>
+  <p style="margin-top:8px">找路径的方法：<code>Win+R</code> → 粘贴 <code>%APPDATA%\CampusLink</code> → 回车。</p>
+</div>
+
+<h2>七、三句话总结</h2>
+<div class="card">
+  <p><b>断网 → 点「CampusLink 认证」→ 等 2 秒。</b><br>
+  密码只输一次，之后它就当你不存在。<br>
+  换密码用「CampusLink 配置」，出问题发两个日志文件。</p>
+</div>
+
+<footer>
+  CampusLink v2.0.0 · 仅供个人学习与单账号自用 · 请遵守学校网络使用规定<br>
+  本说明对应版本 2.0.0（2026-10）
+</footer>
+
+</body>
+</html>
