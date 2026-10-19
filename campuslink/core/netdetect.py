@@ -290,6 +290,21 @@ def is_online(timeout: float = 5.0) -> bool:
 
     比 detect() 轻得多，自动重连的轮询循环用它。
     判据同样是 HTTP 内容，不是 TCP。
+
+    **多点保守判定（至少 2/3 通过才算在线）**：
+    校园网普遍会把 gstatic 这类连通性检查域名**放行不劫持**（防止设备
+    反复弹认证窗），未认证时 gstatic 也返回真 204 —— 单点判定会把
+    「未认证」误报成「已联网」。（与 CLI 分支同步的修复）
     """
-    r = _touch("http://connectivitycheck.gstatic.com/generate_204", timeout=timeout)
-    return bool(r.get("ok") and r["status"] == 204 and r["length"] == 0)
+    probes = (
+        ("http://connectivitycheck.gstatic.com/generate_204",
+         lambda r: r.get("ok") and r["status"] == 204 and r["length"] == 0),
+        ("http://www.msftconnecttest.com/connecttest.txt",
+         lambda r: r.get("ok") and r["status"] == 200
+                   and "Microsoft Connect Test" in r.get("body", "")),
+        ("http://detectportal.firefox.com/success.txt",
+         lambda r: r.get("ok") and r["status"] == 200
+                   and "success" in r.get("body", "")),
+    )
+    clean = sum(1 for _url, okf in probes if okf(_touch(_url, timeout=timeout)))
+    return clean >= 2
