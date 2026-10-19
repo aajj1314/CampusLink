@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from campuslink.core import crnn_math, ocr
-from campuslink.core.ocr_backend import ENGINE_CRNN, ENGINE_HEURISTIC, LocalDdddocrBackend
+from campuslink.core.ocr_backend import ENGINE_CRNN, LocalDdddocrBackend
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMMON_PY = REPO_ROOT / "ml" / "scripts" / "common.py"
@@ -302,127 +302,41 @@ class TestBackendWiring:
                                                        strategies=("raw",))
         assert r.text == "32"
 
-    def test_model_gives_up_falls_back_to_heuristic(self, monkeypatch):
+    def test_model_gives_up_does_not_fall_back(self, monkeypatch):
+        """
+        模型弃权（expr 空）→ 直接换图。
+
+        2.0 已剥离启发式引擎：13% 正确 / 17% 错答的期望收益为负，
+        模型没把握时交给它重读同一张图，错答代价大于偶尔救回一张。
+        """
         get, _ = self._fake_get("")
-        monkeypatch.setattr(crnn_math, "get_recognizer", get)
-        monkeypatch.setattr(ocr, "recognize_math",
-                            lambda img, **kw: ("42", {"bin152": "ok"}))
-        r = LocalDdddocrBackend(mode="math").recognize(_png_bytes(), length=4,
-                                                       strategies=("raw",))
-        assert r.text == "42"
-        assert r.detail["_engine"] == ENGINE_HEURISTIC
-        assert r.confidence == 1.0                # 启发式恢复二值语义
-
-    def test_model_garbage_expr_does_not_fall_back(self, monkeypatch):
-        """
-        模型输出垃圾（parse 失败）→ 与除不尽同策：换图，不落启发式。
-
-        语义边界：expr **非空但 solve=None** = 模型给出了输出但不可靠，
-        统一换图；启发式兜底只保留给 **expr 为空**（模型完全没认出）——
-        后者启发式重读还有价值，前者给它翻案只会引入错答风险。
-        """
-        get, _ = self._fake_get("乱码")
         monkeypatch.setattr(crnn_math, "get_recognizer", get)
         monkeypatch.setattr(
             ocr, "recognize_math",
-            lambda img, **kw: pytest.fail("垃圾算式不应落启发式重读"))
+            lambda img, **kw: pytest.fail("启发式引擎已移除，不应被调用"),
+            raising=False)   # 函数已随引擎移除，属性不存在
+
+        r = LocalDdddocrBackend(mode="math").recognize(_png_bytes(), length=4,
+                                                       strategies=("raw",))
+        assert r.text == "" and r.confidence == 0.0
+        assert r.detail["_engine"] == ENGINE_CRNN
+        assert r.source == "local-math"
+
+    def test_no_model_returns_empty_without_heuristic(self, monkeypatch, tmp_path):
+        """模型文件不存在 → 换图（2.0 不再有启发式兜底）。"""
+        monkeypatch.setenv(crnn_math.ENV_MODEL, str(tmp_path / "none.onnx"))
+        crnn_math.reset_singleton()
+        monkeypatch.setattr(
+            ocr, "recognize_math",
+            lambda img, **kw: pytest.fail("启发式引擎已移除，不应被调用"),
+            raising=False)   # 函数已随引擎移除，属性不存在
+
         r = LocalDdddocrBackend(mode="math").recognize(_png_bytes(), length=4,
                                                        strategies=("raw",))
         assert r.text == ""
         assert r.detail["_engine"] == ENGINE_CRNN
-        assert r.detail["_expr"] == "乱码"
-
-    def test_model_empty_expr_falls_back_to_heuristic(self, monkeypatch):
-        """模型完全没认出（expr 空）→ 启发式兜底仍有价值（1.x 行为）。"""
-        monkeypatch.setattr(crnn_math, "get_recognizer", self._fake_get("")[0])
-        monkeypatch.setattr(ocr, "recognize_math",
-                            lambda img, **kw: ("42", {}))
-        r = LocalDdddocrBackend(mode="math").recognize(_png_bytes(), length=4,
-                                                       strategies=("raw",))
-        assert r.text == "42" and r.detail["_engine"] == ENGINE_HEURISTIC
-
-    def test_division_indivisible_does_not_fall_back(self, monkeypatch):
-        """
-        模型读对 `2除7`（除不尽）→ 必须直接换图，**不许**交给启发式重读。
-
-        这是「除不尽 → 安全换图」策略的完整实现：启发式只有 13% 正确率，
-        让它重读同一张图，一旦读出个可解的错式子，「安全换图」就变成
-        「提交错答案」。模型算式可信（92%），solve 拒绝是策略而非失败。
-        （2026-10-19 修复，真实样本 cap_0006 `3除8` 曾绕道启发式）
-        """
-        get, _ = self._fake_get("2除7")
-        monkeypatch.setattr(crnn_math, "get_recognizer", get)
-        monkeypatch.setattr(
-            ocr, "recognize_math",
-            lambda img, **kw: pytest.fail("除不尽时不应落启发式重读"))
-
-        r = LocalDdddocrBackend(mode="math").recognize(_png_bytes(), length=4,
-                                                       strategies=("raw",))
-        assert r.text == ""                       # 换图，不提交任何答案
-        assert r.confidence == 0.0
-        assert r.detail["_engine"] == ENGINE_CRNN
-        assert r.detail["_expr"] == "2除7"
-        assert "拒绝" in r.detail["_reason"]
-        assert r.source == "local-math"
-
-    def test_division_by_zero_does_not_fall_back(self, monkeypatch):
-        """除零同理：策略拒绝，直接换图。"""
-        get, _ = self._fake_get("5除0")
-        monkeypatch.setattr(crnn_math, "get_recognizer", get)
-        monkeypatch.setattr(
-            ocr, "recognize_math",
-            lambda img, **kw: pytest.fail("除零时不应落启发式重读"))
-        r = LocalDdddocrBackend(mode="math").recognize(_png_bytes(), length=4,
-                                                       strategies=("raw",))
-        assert r.text == "" and r.detail["_engine"] == ENGINE_CRNN
-
-    def test_negative_answer_passes_through(self, monkeypatch):
-        """
-        负数答案（`1减8` → -7）必须原样提交，不许被截断或过滤。
-
-        3187 条标注实测 6.5% 的减法题结果为负；solve 返回 "-7" 字符串，
-        模型引擎原样透传。门户是否接受负号属待实测项（见 08 文档 §6），
-        若不接受，提交后验证码错误 → 换图，仍是安全失败。
-        """
-        get, _ = self._fake_get("1减8")
-        monkeypatch.setattr(crnn_math, "get_recognizer", get)
-        r = LocalDdddocrBackend(mode="math").recognize(_png_bytes(), length=4,
-                                                       strategies=("raw",))
-        assert r.text == "-7"
-        assert r.detail["_expr"] == "1减8"
-        assert r.detail["_answer"] == "-7"
-        assert r.detail["_engine"] == ENGINE_CRNN
-
-    def test_heuristic_negative_answer_passes_through(self, monkeypatch):
-        """启发式引擎同样透传负数（1.x 行为，回归保护）。"""
-        monkeypatch.setattr(ocr, "recognize_math",
-                            lambda img, **kw: ("-3", {"_expr": "5减8"}))
-        r = LocalDdddocrBackend(mode="math").recognize(_png_bytes(), length=4,
-                                                       strategies=("raw",))
-        assert r.text == "-3" and r.confidence == 1.0
-
-    def test_no_model_uses_heuristic(self, monkeypatch, tmp_path):
-        monkeypatch.setenv(crnn_math.ENV_MODEL, str(tmp_path / "none.onnx"))
+        assert "模型不可用" in r.detail["_reason"]
         crnn_math.reset_singleton()
-        monkeypatch.setattr(ocr, "recognize_math",
-                            lambda img, **kw: ("5", {}))
-        r = LocalDdddocrBackend(mode="math").recognize(_png_bytes(), length=4,
-                                                       strategies=("raw",))
-        assert r.text == "5" and r.detail["_engine"] == ENGINE_HEURISTIC
-        crnn_math.reset_singleton()
-
-    def test_text_mode_untouched_by_crnn(self, monkeypatch):
-        """字符型验证码绝不能因为模型链路改变行为。"""
-        monkeypatch.setattr(crnn_math, "get_recognizer",
-                            lambda: pytest.fail("text 模式不应触碰 CRNN"))
-        monkeypatch.setattr(ocr, "recognize", lambda img, **kw: ("ab12", {"raw": "ab12"}))
-        monkeypatch.setattr(ocr, "confidence", lambda t, d: 0.9)
-        r = LocalDdddocrBackend(mode="text").recognize(_png_bytes(), length=4,
-                                                       strategies=("raw",))
-        assert r.text == "ab12" and r.source == "local"
-
-    def test_engine_marks_distinct(self):
-        assert ENGINE_CRNN != ENGINE_HEURISTIC
 
 
 # ============================================================ 顶层不引入重依赖

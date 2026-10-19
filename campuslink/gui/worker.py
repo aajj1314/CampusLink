@@ -186,7 +186,7 @@ class MonitorWorker(QThread):
 
 class WarmupWorker(QThread):
     """
-    后台预热 ddddocr 模型。
+    后台预热识别引擎（2.0：字符型 ddddocr 可选；缺失时预热静默跳过）。
 
     首次加载 ONNX 要 1～2 秒，放在这里做，用户点「立即连接」时就是热启动。
     失败也无所谓 —— 真到识别的时候再加载就是了，所以异常直接吞掉。

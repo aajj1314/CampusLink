@@ -2,13 +2,20 @@
 requests>=2.31.0          # HTTP 会话
 beautifulsoup4>=4.12.0    # 解析登录页表单
 lxml>=5.0.0               # bs4 的解析后端
-ddddocr>=1.5.6            # 验证码识别（ONNX 本地推理，不联网）
-numpy>=1.26.0
-opencv-python>=4.9.0      # 图像预处理
+numpy>=1.26.0             # CRNN 模型输入预处理（crnn_math）
 
-# 注意：onnxruntime 由 ddddocr 间接引入，显式固定避免推理后端漂移
+# 注意：2.0 起算式验证码识别由专用 CRNN 模型（ml/models/crnn_math.onnx）
+# 承担，onnxruntime 是模型推理的运行时
 onnxruntime>=1.16.0
-pillow>=10.0.0
+pillow>=10.0.0            # 模型预处理 + 人工兜底对话框的验证码显示
+
+# ---- 可选：字符型验证码支持（2.0 已从打包产物中剥离）----
+# 以下两项只被 core/ocr.py 的字符型识别链路使用。本项目的门户（算式型）
+# 不需要它们；如果你的门户是 4 位字符型验证码，手动安装：
+#   pip install ddddocr opencv-python
+# 缺失时 text 模式会返回「字符识别引擎不可用」并换图重试，不会崩溃。
+# ddddocr>=1.5.6
+# opencv-python>=4.9.0
 
 # ---- GUI ----
 PySide6>=6.6.0            # Qt for Python，含 QtWidgets / QtGui / QtCore

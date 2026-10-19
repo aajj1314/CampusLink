@@ -11,9 +11,10 @@ PyInstaller 打包规格。
    onefile 每次运行都要把几百 MB 解压到 %TEMP%，启动要十几秒。
    本项目是常驻托盘的程序，onedir 启动不到 2 秒，明显更合适。
 
-2. **必须 --collect-all ddddocr / onnxruntime / cv2。**
-   它们的模型和原生 DLL 是 data 文件，PyInstaller 的静态分析看不见，
+2. **必须 --collect-all onnxruntime / keyring。**
+   onnxruntime 的原生 DLL 是 data 文件，PyInstaller 的静态分析看不见，
    不收集的话编译能过、运行时才报 "No such file or directory: common.onnx"。
+   （2.0 起 ddddocr / cv2 已剥离，见 excludes 段的说明。）
 
 3. **排除用不到的 Qt 模块。**
    PySide6 完整安装有 650 MB（含 WebEngine/Chromium）。我们只用
@@ -110,15 +111,19 @@ excludes = [
     "tkinter", "unittest", "pydoc", "doctest", "test",
     "matplotlib", "scipy", "pandas", "IPython", "PIL.ImageQt",
     "setuptools", "pip",
+    # ---- 2.0 剥离的验证码识别依赖（算式门户由专用模型识别）----
+    # core/ocr.py 里还有函数内的延迟 import，静态分析会试图收集，
+    # 这里硬排除；字符型门户用户需自行安装 ddddocr + opencv-python
+    "ddddocr", "cv2", "cv2.*",
 ]
 
 # ---- 收集带 data 文件 / 原生库的包 ----
-# 这几个包的东西（ONNX 模型、onnxruntime 的 DLL、opencv 的 pyd）
-# PyInstaller 的静态分析都看不见，必须显式收集，
-# 否则编译能过、运行时才报「找不到 common.onnx」。
+# 2.0：ddddocr / cv2 已剥离（算式门户由专用模型识别，见 core/crnn_math.py），
+# 产物体积明显下降；两者仍被 core/ocr.py 的字符型链路延迟引用，
+# 用 excludes 硬排除，防止静态分析把它们拽回来。
 binaries = []
 _missing = []
-for pkg in ("ddddocr", "onnxruntime", "cv2", "keyring"):
+for pkg in ("onnxruntime", "keyring"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
