@@ -57,3 +57,8 @@ dist-cli2/
 build-cli2/
 dist-cli/
 build-cli/
+dist-cli3/
+build-cli3/
+dist-cli4/
+build-cli4/
+packaging/_tmp_*.iss
