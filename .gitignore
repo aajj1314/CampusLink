@@ -40,9 +40,9 @@ ml/dataset/*.csv
 ml/models/
 ml/dataset.zip
 
-# ml2/：处理版图（对比度增强）重训实验，产物同样不入库
+# ml2/：处理版图（对比度增强）独立模型线，数据集与产物同样不入库
+ml2/dataset/
 ml2/models/
-ml2/preprocess_samples/
 
 # ------------------------------------------------------------------ 历史数据目录（Linux 侧传回的副本，敏感物料不入库）
 dataset/

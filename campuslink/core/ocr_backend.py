@@ -111,7 +111,21 @@ class LocalDdddocrBackend:
                         source="local-math",
                         elapsed_ms=max(0, int((_t.monotonic() - started) * 1000)),
                     )
-            # 模型放弃（没认出 / 算式不合法）→ 落到启发式，别让它空手而归
+                # 模型读出了算式但被求值策略拒绝（除不尽 / 除零，约 6.7% 的除法题）。
+                # 这**不是识别失败** —— 算式本身可信（模型 92%），换图是正确处置；
+                # 若交给启发式重读同一张图（13% 正确率），一旦它读出个可解的
+                # 错式子，就会把「安全换图」变成「提交错答案」。2026-10-19 修复。
+                cdetail["_engine"] = ENGINE_CRNN
+                cdetail["_expr"] = expr
+                cdetail["_reason"] = "算式被求值策略拒绝（除不尽/除零），换图"
+                return OcrResult(
+                    text="",
+                    confidence=0.0,
+                    detail=cdetail,
+                    source="local-math",
+                    elapsed_ms=max(0, int((_t.monotonic() - started) * 1000)),
+                )
+            # 模型没认出图（expr 空）→ 这才是「识别失败」，落启发式重试一次
 
         # ---------- 2) 启发式兜底 ----------
         answer, detail = ocr.recognize_math(image)
