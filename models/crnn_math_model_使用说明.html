@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>crnn_math.onnx 算式验证码识别模型 · 使用说明</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: #f5f6f8; color: #2b2b2b; line-height: 1.75;
+    max-width: 820px; margin: 0 auto; padding: 24px 16px 60px;
+  }
+  header {
+    background: linear-gradient(135deg, #0f766e, #14b8a6);
+    color: #fff; border-radius: 12px; padding: 28px 24px; margin-bottom: 24px;
+  }
+  header h1 { font-size: 23px; margin-bottom: 8px; }
+  header p { opacity: .92; font-size: 14px; }
+  h2 {
+    font-size: 18px; color: #0f766e; margin: 32px 0 12px;
+    padding-left: 10px; border-left: 4px solid #0f766e;
+  }
+  .card {
+    background: #fff; border-radius: 10px; padding: 18px 20px;
+    margin-bottom: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.06);
+  }
+  pre {
+    background: #1e293b; color: #e2e8f0; border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-size: 13px;
+    font-family: Consolas, "Courier New", monospace; line-height: 1.6;
+  }
+  code, .path {
+    background: #e6f2f0; border-radius: 4px; padding: 1px 6px;
+    font-family: Consolas, monospace; font-size: 13px; word-break: break-all;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { border: 1px solid #e4e7ed; padding: 7px 10px; text-align: left; }
+  th { background: #f0fdfa; }
+  .warn {
+    background: #fff7e6; border-left: 4px solid #e6a23c;
+    border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 14px;
+  }
+  .ok {
+    background: #f0fdfa; border-left: 4px solid #0f766e;
+    border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 14px;
+  }
+  footer { margin-top: 40px; font-size: 12px; color: #999; text-align: center; }
+  ul { padding-left: 22px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>crnn_math.onnx · 算术验证码识别模型</h1>
+  <p>输入一张算式验证码图片，输出算式文本（如 <b>7加9</b>）和置信度。CRNN + CTC，纯 CPU 推理。</p>
+</header>
+
+<h2>一、这个模型是什么</h2>
+<div class="card">
+  <ul>
+    <li><b>任务</b>：识别算术验证码图片 → 输出算式原文，例如图片 <code>6乘12=?</code> 输出文本 <code>6乘12</code>（注意是<b>算式原文</b>，不是答案 72，答案自己算）</li>
+    <li><b>架构</b>：CRNN（CNN 提特征 + BiLSTM 序列建模 + CTC 解码）</li>
+    <li><b>精度</b>：从未参与训练的 116 张独立测试集上，<b>答案正确率 92.2%</b>（含求值）；算式原文错误约 6.9%</li>
+    <li><b>运行环境</b>：onnxruntime CPU 版即可，普通电脑毫秒级一张，不需要显卡</li>
+    <li><b>字符集</b>：12 类 —— <code>0-9</code> 加 <code>加 减 乘 除</code> 四个汉字运算符（+ CTC blank）</li>
+  </ul>
+</div>
+
+<h2>二、环境准备（三条命令）</h2>
+<div class="card">
+  <p>需要 Python 3.9 或更高。命令行执行：</p>
+  <pre>pip install onnxruntime numpy pillow</pre>
+  <p>就这三个依赖。把 <code>crnn_math.onnx</code> 和下面的脚本放在<b>同一个文件夹</b>。</p>
+</div>
+
+<h2>三、直接能跑的完整代码</h2>
+<div class="card">
+  <p>保存为 <code>demo.py</code>，和模型放一起，把最后改成你的图片文件名，运行 <code>python demo.py</code>：</p>
+  <pre>import io
+import numpy as np
+import onnxruntime as ort
+from PIL import Image
+
+CHARS = "0123456789加减乘除"
+IDX_TO_CHAR = {i + 1: c for i, c in enumerate(CHARS)}   # 0 是 CTC blank，不是字符
+
+# ---------- 1. 预处理：参数必须和训练完全一致，一个都不能改 ----------
+def preprocess(png_bytes):
+    img = Image.open(io.BytesIO(png_bytes))
+    img = img.convert("L").resize((200, 32), Image.Resampling.BILINEAR)
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    arr = (arr - 0.5) / 0.5          # 归一化到 [-1, 1]
+    return arr[None, None, :, :]     # shape: (1, 1, 32, 200)
+
+# ---------- 2. CTC 贪心解码 ----------
+def decode(logits):
+    x = logits.astype(np.float32)
+    x = x - x.max(axis=-1, keepdims=True)
+    e = np.exp(x)
+    probs = e / e.sum(axis=-1, keepdims=True)
+    if probs.ndim == 3:
+        probs = probs[0]
+    text, confs, prev = "", [], -1
+    for t, k in enumerate(probs.argmax(axis=1)):
+        k = int(k)
+        if k != 0 and k != prev:                     # 0 = blank，去重去 blank
+            ch = IDX_TO_CHAR.get(k, "")
+            if ch:
+                text += ch
+                confs.append(float(probs[t, k]))
+        prev = k
+    return text, (min(confs) if confs else 0.0)      # 置信度 = 最弱字符的概率
+
+# ---------- 3. 求值："7加9" → 16（除不尽/除零返回 None，建议换图） ----------
+def solve(expr):
+    import re
+    m = re.fullmatch(r"(\d+)(加|\+|减|-|乘|\*|×|除|÷)(\d+)", expr)
+    if not m:
+        return None
+    a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
+    if op in ("加", "+"):  return str(a + b)
+    if op in ("减", "-"):  return str(a - b)          # 可为负数，直接提交
+    if op in ("乘", "*"):  return str(a * b)
+    return str(a // b) if b and a % b == 0 else None  # 除不尽 → None → 换图
+
+# ---------- 4. 用起来 ----------
+sess = ort.InferenceSession("crnn_math.onnx",
+                            providers=["CPUExecutionProvider"])
+IN = sess.get_inputs()[0].name
+
+png = open("captcha.png", "rb").read()               # ← 换成你的验证码图片
+text, conf = decode(sess.run(None, {IN: preprocess(png)})[0])
+print(f"算式原文: {text!r}  置信度: {conf:.3f}")
+
+answer = solve(text)
+print(f"答案: {answer if answer is not None else '(除不尽/格式异常，换一张图)'}")</pre>
+  <p style="margin-top:10px">输出示例：</p>
+  <pre>算式原文: '7加9'  置信度: 0.987
+答案: 16</pre>
+</div>
+
+<h2>四、预处理参数（照抄即可，改动会掉点）</h2>
+<div class="card">
+  <table>
+    <tr><th>参数</th><th>值</th><th>说明</th></tr>
+    <tr><td>输入图</td><td>200 × 60 的算式验证码 PNG</td><td>训练数据来自本校园网门户</td></tr>
+    <tr><td>灰度</td><td><code>convert("L")</code></td><td>必须先转灰度</td></tr>
+    <tr><td>缩放</td><td><code>(200, 32)</code> BILINEAR</td><td>宽 200 高 32，双线性插值</td></tr>
+    <tr><td>归一化</td><td><code>x/255 → (x-0.5)/0.5</code></td><td>即映射到 [-1, 1]</td></tr>
+    <tr><td>张量形状</td><td><code>(1, 1, 32, 200)</code></td><td>NCHW，单通道</td></tr>
+    <tr><td>字符表</td><td>idx 0 = blank，1–12 = <code>0123456789加减乘除</code></td><td>顺序不能变</td></tr>
+  </table>
+  <div class="warn">⚠️ 以上参数与训练侧逐参数绑定。<b>不要</b>用 RGB 三通道、不要改尺寸、不要换插值算法、不要做二值化 —— 任何一项改动都会显著掉点。</div>
+</div>
+
+<h2>五、置信度怎么用</h2>
+<div class="card">
+  <p>解码返回的置信度 = <b>整条算式里最没把握那个字符</b>的概率（最弱环节）。实战建议：</p>
+  <ul>
+    <li><b>≥ 0.90</b>：直接用</li>
+    <li><b>&lt; 0.90</b>：别赌，<b>换一张验证码重新识别</b>（错误识别的代价是提交错误答案）</li>
+    <li>本项目实测：8 个错误样本里 5 个置信度 ≥ 0.888、4 个接近 1.0 —— 错误是“看不见字边界”而非“犹豫”，<b>阈值没法救回来</b>，只能靠换图</li>
+    <li>求值阶段除不尽（如 <code>2除7</code>）或除零 → <code>None</code> → 同样换图</li>
+  </ul>
+</div>
+
+<h2>六、训练数据分布（了解即可，影响预期）</h2>
+<div class="card">
+  <table>
+    <tr><th>运算符</th><th>占比</th><th>注意</th></tr>
+    <tr><td>加 / 乘 / 除</td><td>约 24%–26%</td><td>两个操作数都只有 1 位数（7加9）</td></tr>
+    <tr><td>减</td><td>约 26%</td><td><b>64% 的减法 B 是两位数</b>（55减23），且 6.5% 结果为负（1减8）</td></tr>
+  </table>
+  <p style="margin-top:8px">训练/测试集共约 3300 张标注图，全部来自同一门户真实验证码。<b>换成别的门户的验证码图，效果无法保证</b>（字体、干扰线风格不同）。</p>
+</div>
+
+<h2>七、文件说明</h2>
+<div class="card">
+  <table>
+    <tr><th>文件</th><th>大小</th><th>说明</th></tr>
+    <tr><td><code>crnn_math.onnx</code></td><td>21.2 MB</td><td>推理用模型，就这一个文件</td></tr>
+    <tr><td><code>crnn_math_ep234_83.5.pt</code></td><td>21.2 MB</td><td>PyTorch 最优权重（83.5%），想微调才需要</td></tr>
+    <tr><td><code>crnn_math.pt</code> / <code>crnn_math_last.pt</code></td><td>21.2 MB</td><td>完整训练 / 末轮权重（存档）</td></tr>
+    <tr><td><code>train_full_log.txt</code></td><td>23 KB</td><td>300 轮训练曲线</td></tr>
+  </table>
+  <p style="margin-top:8px"><b>只用推理的话，拿 <code>crnn_math.onnx</code> 一个文件就够了。</b></p>
+</div>
+
+<h2>八、使用边界</h2>
+<div class="card">
+  <ul>
+    <li>本模型仅针对<b>单一门户</b>的算式验证码训练，字体和干扰风格换了效果不保证</li>
+    <li>仅限<b>个人学习研究、单账号自用</b>；不得用于多账号池、规避平台限制或任何攻击性用途</li>
+    <li>想要完整工程（训练脚本、数据标注、与认证流程的集成）见项目仓库 <code>ml/</code> 目录</li>
+  </ul>
+</div>
+
+<footer>
+  crnn_math.onnx · 2026-10 训练 · 参数与 CampusLink 项目训练侧逐参数一致<br>
+  出问题对照第四节核对预处理，九成问题是参数不一致
+</footer>
+
+</body>
+</html>

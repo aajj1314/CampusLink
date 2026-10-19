@@ -1,0 +1,27 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local credentials and runtime data (never commit)
+config.json
+config.json.bak
+logs/
+*.log
+
+# Build outputs
+build/
+dist/
+packaging/output/
+*.spec.bak
+
+# Large training artifacts (ONNX model is tracked)
+models/*.pt
+
+# Archives and IDE files
+*.rar
+*.7z
+.idea/
+.vscode/

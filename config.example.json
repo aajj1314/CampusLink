@@ -1,0 +1,38 @@
+{
+  "_说明": [
+    "填写 account 下的学工号、上网账号、密码。",
+    "密码以明文保存，请勿外传。"
+  ],
+  "account": {
+    "student_id": "",
+    "username": "",
+    "password": ""
+  },
+  "portal": {
+    "base_url": "http://10.6.6.6",
+    "isp": "自动选择",
+    "save_login_info": false
+  },
+  "monitor": {
+    "check_interval_seconds": 20,
+    "request_timeout_seconds": 6,
+    "max_captcha_retries": 6,
+    "retry_delay_seconds": 1.2,
+    "login_verify_seconds": 5,
+    "network_cooldown_seconds": 30,
+    "account_cooldown_seconds": 600,
+    "antibot_cooldown_seconds": 60,
+    "captcha_fail_cooldown_seconds": 120,
+    "open_browser_on_failure": true,
+    "browser_cooldown_seconds": 1800
+  },
+  "captcha": {
+    "model_path": "models/crnn_math.onnx",
+    "confidence_threshold": 0.9
+  },
+  "logging": {
+    "level": "INFO",
+    "max_bytes": 1048576,
+    "backup_count": 3
+  }
+}
