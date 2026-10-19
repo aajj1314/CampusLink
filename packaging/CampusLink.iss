@@ -16,7 +16,7 @@
 
 #define MyAppName "CampusLink"
 #define MyAppNameCN "校园网认证客户端"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "2.0.0"
 #define MyAppPublisher "CampusLink"
 #define MyAppExeName "CampusLink.exe"
 #define MyAppId "{{8F3A7C21-4B6E-4E2A-9D58-2C1F7A9E5B04}"

@@ -43,12 +43,24 @@ datas = [
     (str(ROOT / "campuslink" / "gui" / "assets"), "campuslink/gui/assets"),
 ]
 
+# 2.0：算式验证码专用模型（ml/models/crnn_math.onnx，训练工程在 ml/ 下）。
+# 存在才打进去；不存在时构建照样过，运行时静默降级到启发式引擎。
+# 放 `ml/models/` 是为了让 crnn_math.find_model_path() 从 _MEIPASS 往上找时命中。
+_crnn_model = ROOT / "ml" / "models" / "crnn_math.onnx"
+if _crnn_model.is_file():
+    datas.append((str(_crnn_model), "ml/models"))
+    print(f"[spec] 已包含算式模型 {_crnn_model} ({_crnn_model.stat().st_size // 1024 // 1024} MiB)")
+else:
+    print("[spec] 未找到 ml/models/crnn_math.onnx -> 产物将只走启发式引擎（1.x 行为）")
+
 # ------------------------------------------------------------------ 隐藏导入
 hiddenimports = [
     "campuslink",
     "campuslink.core",
     "campuslink.core.ocr",
     "campuslink.core.ocr_backend",
+    "campuslink.core.captcha_math",
+    "campuslink.core.crnn_math",     # 2.0：算式专用模型推理侧（ocr_backend 内延迟导入）
     "campuslink.core.portal",
     "campuslink.core.authenticator",
     "campuslink.core.netdetect",

@@ -20,12 +20,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'CampusLink'),
           StringStruct('FileDescription', 'CampusLink 校园网认证客户端'),
-          StringStruct('FileVersion', '1.0.1.0'),
+          StringStruct('FileVersion', '2.0.0.0'),
           StringStruct('InternalName', 'CampusLink'),
           StringStruct('LegalCopyright', 'Copyright (C) 2026 CampusLink'),
           StringStruct('OriginalFilename', 'CampusLink.exe'),
           StringStruct('ProductName', 'CampusLink 校园网认证'),
-          StringStruct('ProductVersion', '1.0.1.0'),
+          StringStruct('ProductVersion', '2.0.0.0'),
           StringStruct('Comments', '校园网认证客户端，支持自动重连与托盘常驻')
         ]
       )

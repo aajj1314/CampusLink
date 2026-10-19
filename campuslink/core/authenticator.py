@@ -71,6 +71,26 @@ class Authenticator:
             self._ocr_backend = LocalDdddocrBackend(mode=mode)
         return self._ocr_backend
 
+    @staticmethod
+    def _gated(conf: float, profile: PortalProfile) -> bool:
+        """
+        该识别结果是否应被置信度门限拦下。
+
+        条件：conf 落在 (0, 1) 开区间内才算「真实置信度」——
+        模型引擎给的是连续值；启发式引擎给二值 1.0/0.0，
+        1.0 不会被 0.90 的门限拦（0.0 早已被空串分支处理），
+        所以二值引擎天然免疫门限，无需特判引擎类型。
+        门限值本身做 0~1 截断，防手改档案写坏。
+        """
+        thr = getattr(profile, "captcha_min_confidence", 0.0)
+        try:
+            thr = float(thr)
+        except (TypeError, ValueError):
+            return False
+        if not 0.0 < conf < 1.0:
+            return False
+        return conf < thr
+
     # ------------------------------------------------------------ 对外
     def check_online(self, timeout: float = 5.0) -> bool:
         """轻量检测：现在能不能上外网。"""
@@ -203,19 +223,27 @@ class Authenticator:
                     img, length=profile.ocr_length, strategies=profile.ocr_strategies)
                 captcha_text = ocr_result.text
                 detail = ocr_result.detail
+                conf = ocr_result.confidence
                 last_sig = hashlib.md5(img).hexdigest()
                 if on_captcha:
                     try:
                         on_captcha(img, captcha_text)
                     except Exception:
                         pass
-                if not captcha_text:
-                    say("验证码没认出来，换一张重试")
-                    time.sleep(RETRY_DELAY)
-                    continue
 
-                # --- 3.5) 人工输入兜底：策略由回调决定，core 只负责接线 ---
-                if ask_captcha is not None:
+                # --- 3.5) 置信度门限（仅 math 模式的模型引擎有意义）---
+                # 模型引擎的 confidence 是真实的最小字符置信度；低于门限的结果
+                # 按没认出来处理（换图），而不是赌一把提交错答案。
+                # 启发式引擎的 confidence 是二值的（1.0/0.0），门限对它无影响。
+                if captcha_text and self._gated(conf, profile):
+                    captcha_text = ""
+                    say(f"验证码把握不足（{conf:.0%} < "
+                        f"{profile.captcha_min_confidence:.0%}），换一张重试")
+
+                if ask_captcha is not None and not captcha_text:
+                    # 人工兜底：只在这张图「没认出来 / 被门限拦下」时才问。
+                    # 识别有把握时不去打扰用户 —— 这是 2.0 的人工兜底语义
+                    # （1.x 的「每次都弹」由 GUI 回调自行实现，此处不强制）。
                     if aborted:
                         return _cancelled()
                     try:
@@ -227,19 +255,19 @@ class Authenticator:
                     if manual and manual.strip():
                         captcha_text = manual.strip()
                         say("已采用人工输入的验证码答案")
-                    elif not captcha_text:
-                        # 自动没认出来、用户也没给答案 → 走换图
-                        say("验证码没认出来，换一张重试")
-                        time.sleep(RETRY_DELAY)
-                        continue
 
-                conf = ocr_result.confidence
+                if not captcha_text:
+                    say("验证码没认出来，换一张重试")
+                    time.sleep(RETRY_DELAY)
+                    continue
+
                 if self.verbose:
                     # 算式形态下 captcha_text 是**计算结果**，光看数字没意义，
                     # 把识别到的算式一起打出来才排得动故障
                     expr = ocr_result.detail.get("_expr")
                     if expr:
-                        say(f"验证码算式 {expr}=? → 填 {captcha_text}")
+                        say(f"验证码算式 {expr}=? → 填 {captcha_text}"
+                            f"（把握 {conf:.0%}）")
                     else:
                         say(f"验证码识别为 {captcha_text}（置信度 {conf:.0%}）")
 

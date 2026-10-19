@@ -52,16 +52,24 @@ class _FakePortal:
 
 
 class _FakeBackend:
-    """替身 OCR：返回固定识别结果（可编排）。"""
+    """替身 OCR：返回固定识别结果（可编排）。
 
-    def __init__(self, results: list[str]):
+    结果项可以是 `"text"`（conf 按二值 1.0/0.0，模拟启发式引擎）
+    或 `("text", conf)`（真实连续置信度，模拟 CRNN 模型引擎）。
+    """
+
+    def __init__(self, results: list):
         self._results = list(results)
         self.calls = 0
 
     def recognize(self, image, *, length, strategies):
         self.calls += 1
-        text = self._results.pop(0) if self._results else ""
-        return OcrResult(text=text, confidence=1.0 if text else 0.0,
+        item = self._results.pop(0) if self._results else ""
+        if isinstance(item, tuple):
+            text, conf = item
+        else:
+            text, conf = item, (1.0 if item else 0.0)
+        return OcrResult(text=text, confidence=conf,
                          detail={}, source="fake")
 
 
@@ -109,29 +117,35 @@ class TestDefaultPathUntouched:
 
 # ============================================================ 钩子语义
 class TestAskCaptchaHook:
-    def test_manual_answer_overrides_auto(self, monkeypatch):
-        """钩子返回非空 → 覆盖自动识别结果提交。"""
+    """
+    2.0 语义：ask_captcha 只在「这张图没认出来 / 被置信度门限拦下」时调用。
+    识别有把握时不去打扰用户 —— 人工输入从「总是人工」升级为「低置信兜底」。
+    """
+
+    def test_low_confidence_answer_overrides_gate(self, monkeypatch):
+        """模型没把握（conf 0.7 < 0.9）→ 弹人工 → 用户答案覆盖提交。"""
         portal = _FakePortal([(True, "ok", "ok")])
         auth = Authenticator(_profile())
-        auth._ocr_backend = _FakeBackend(["99"])       # 自动结果（错）
+        auth._ocr_backend = _FakeBackend([("99", 0.7)])   # 自动结果没把握
         res = _run_login(auth, monkeypatch, portal,
                          ask_captcha=lambda img, auto: "16")
         assert res.ok
         assert portal.submitted == [("16",)]
 
-    def test_hook_asked_even_when_auto_recognized(self, monkeypatch):
-        """策略在回调里：core 每次拿到验证码后都问一次，包括识别成功时。"""
+    def test_high_confidence_never_bothers_user(self, monkeypatch):
+        """识别有把握（conf 0.95 ≥ 0.9）→ 直接提交，ask 一次都不调。"""
         asked = []
 
         def _ask(img, auto):
             asked.append(auto)
-            return None            # 「自动的结果就行」
+            return None
 
         portal = _FakePortal([(True, "ok", "ok")])
         auth = Authenticator(_profile())
-        auth._ocr_backend = _FakeBackend(["1234"])
-        _run_login(auth, monkeypatch, portal, ask_captcha=_ask)
-        assert asked == ["1234"]
+        auth._ocr_backend = _FakeBackend([("1234", 0.95)])
+        res = _run_login(auth, monkeypatch, portal, ask_captcha=_ask)
+        assert res.ok
+        assert asked == []
         assert portal.submitted == [("1234",)]
 
     def test_hook_none_with_empty_auto_retries(self, monkeypatch):
@@ -144,11 +158,11 @@ class TestAskCaptchaHook:
         assert res.ok
         assert portal.submitted == [("88",)]
 
-    def test_hook_none_with_valid_auto_submits_auto(self, monkeypatch):
-        """「仅失败才问」策略：自动有结果时回调返回 None → 用自动的。"""
+    def test_hook_none_with_gated_result_retries(self, monkeypatch):
+        """低置信被门限拦下 + 用户跳过 → 换图。"""
         portal = _FakePortal([(True, "ok", "ok")])
         auth = Authenticator(_profile())
-        auth._ocr_backend = _FakeBackend(["1234"])
+        auth._ocr_backend = _FakeBackend([("99", 0.7), ("1234", 0.95)])
         res = _run_login(auth, monkeypatch, portal,
                          ask_captcha=lambda img, auto: None)
         assert res.ok
@@ -176,14 +190,14 @@ class TestAskCaptchaHook:
         assert portal.submitted == [("5",)]
 
     def test_hook_cancelled_aborts_login(self, monkeypatch):
-        """钩子抛 Cancelled → 整个登录以「已取消」结束，不再提交。"""
+        """低置信弹框时用户取消（钩子抛 Cancelled）→ 整个登录中止。"""
         portal = _FakePortal([(True, "ok", "ok")])
 
         def _cancel(img, auto):
             raise Cancelled("用户取消")
 
         auth = Authenticator(_profile())
-        auth._ocr_backend = _FakeBackend(["1234"])
+        auth._ocr_backend = _FakeBackend([("99", 0.7)])
         res = _run_login(auth, monkeypatch, portal, ask_captcha=_cancel)
         assert res.ok is False
         assert "取消" in res.message
@@ -194,7 +208,7 @@ class TestAskCaptchaHook:
         asked = []
         portal = _FakePortal([(True, "ok", "ok")])
         auth = Authenticator(_profile())
-        auth._ocr_backend = _FakeBackend(["1234"])
+        auth._ocr_backend = _FakeBackend([""])
         res = auth.login(
             _cred(),
             cancel=lambda: True,
@@ -204,6 +218,62 @@ class TestAskCaptchaHook:
         # cancel 恒 True，第一次检查点就退出，登录页都没打开
         assert res.ok is False
         assert asked == []
+
+
+# ============================================================ 置信度门限
+class TestConfidenceGate:
+    """`Authenticator._gated`：只有「真实的中间值置信度」才会被拦。"""
+
+    def test_binary_confidence_never_gated(self):
+        """启发式引擎给 1.0/0.0 二值 —— 门限对它必须无影响（1.x 兼容）。"""
+        p = _profile()
+        assert not Authenticator._gated(1.0, p)
+        assert not Authenticator._gated(0.0, p)
+
+    def test_low_confidence_gated(self):
+        p = _profile(captcha_min_confidence=0.90)
+        assert Authenticator._gated(0.7, p)
+        assert Authenticator._gated(0.899, p)
+
+    def test_high_confidence_passes(self):
+        p = _profile(captcha_min_confidence=0.90)
+        assert not Authenticator._gated(0.90, p)      # 等于门限 = 有把握
+        assert not Authenticator._gated(0.95, p)
+
+    def test_gate_disabled_at_zero(self):
+        """门限设 0 → 全部放行（用户想关掉这个特性）。"""
+        p = _profile(captcha_min_confidence=0.0)
+        assert not Authenticator._gated(0.5, p)
+
+    def test_gate_disabled_at_one(self):
+        """门限设 1.0 → 只有 conf=1.0 的（可能是二值）能过，其余全拦。"""
+        p = _profile(captcha_min_confidence=1.0)
+        assert not Authenticator._gated(1.0, p)       # 1.0 不在开区间，仍不拦
+        assert Authenticator._gated(0.99, p)
+
+    def test_bad_threshold_disables_gate(self):
+        """手改档案把门限写坏 → 不拦（宁可多提交也不因配置错误卡死）。"""
+        p = _profile()
+        object.__setattr__(p, "captcha_min_confidence", "abc")
+        assert not Authenticator._gated(0.5, p)
+
+    def test_integration_low_confidence_exhausts_retries(self, monkeypatch):
+        """连续低置信 → 换图重试到 max_retry 用尽，一次都不提交。"""
+        portal = _FakePortal([(True, "ok", "ok")])
+        auth = Authenticator(_profile(max_retry=3))
+        auth._ocr_backend = _FakeBackend([("99", 0.7)] * 5)
+        res = _run_login(auth, monkeypatch, portal)
+        assert res.ok is False
+        assert portal.submitted == []
+
+    def test_integration_gate_roundtrip(self):
+        from campuslink.core.models import PortalProfile as PP
+        p = PP(captcha_min_confidence=0.8)
+        assert PP.from_dict(p.to_dict()).captcha_min_confidence == 0.8
+
+    def test_profile_field_default(self):
+        from campuslink.core.models import PortalProfile as PP
+        assert PP().captcha_min_confidence == 0.90
 
 
 # ============================================================ 配置字段

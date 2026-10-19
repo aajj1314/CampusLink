@@ -121,6 +121,15 @@ class PortalProfile:
     #:   "math" —— 算术表达式，要求填**计算结果**（本门户 2026-10 之后是这种）
     #: 两种形态的识别链路完全不同：math 走 ocr.recognize_math() + captcha_math 求解。
     captcha_mode: str = "text"
+    #: 算式模型的最低置信度门限（0~1，2.0 新增）。
+    #: 模型识别结果的 confidence = 被选中字符概率的最小值（最弱环节）。
+    #: 低于门限的结果**不提交**，按「没认出来」换图重试 —— 把低把握的识别
+    #: 转成无害的换图，而不是赌一把提交错答案。
+    #: 0.90 的实测依据（116 张独立测试集）：8 个错答里 3 个 min 置信度 <0.90
+    #: 被拦下，剩余错答 4.3%；正确样本约 12% 会被拦下换图（无害）。
+    #: 仅对 math 模式 + 模型引擎生效；启发式引擎的 confidence 是二值的
+    #: （1.0/0.0），不受门限影响。
+    captcha_min_confidence: float = 0.90
     max_retry: int = 8
     timeout: int = 10
     verify_ssl: bool = False
@@ -140,4 +149,9 @@ class PortalProfile:
         clean = {k: v for k, v in (d or {}).items() if k in known}
         if "ocr_strategies" in clean:
             clean["ocr_strategies"] = tuple(clean["ocr_strategies"])
+        if "captcha_min_confidence" in clean:
+            try:
+                clean["captcha_min_confidence"] = float(clean["captcha_min_confidence"])
+            except (TypeError, ValueError):
+                clean.pop("captcha_min_confidence")   # 手改 JSON 写坏了 → 用默认
         return cls(**clean)

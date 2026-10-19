@@ -243,11 +243,11 @@ class MainWindow(QMainWindow):
         self.ck_auto = QCheckBox("断线自动重新认证")
         self.ck_startup = QCheckBox("开机自动启动")
         self.ck_minimized = QCheckBox("启动时最小化到托盘")
-        self.ck_manual = QCheckBox("验证码人工输入（弹出图片手工填写，算式验证码推荐开启）")
+        self.ck_manual = QCheckBox("验证码人工兜底（自动识别没把握时弹出手工填写）")
         self.ck_manual.setToolTip(
-            "开启后每次登录会弹出验证码图片，由你手工填答案。\n"
-            "算式型验证码的自动识别准确率很低，且填错会消耗登录次数，\n"
-            "识别模型达标前建议保持开启。")
+            "2.0 默认用训练好的模型自动识别算式验证码；把握不足的结果会换图重试。\n"
+            "勾选后，遇到模型没把握的图会弹窗让你手工填答案（比反复换图更快）。\n"
+            "不勾则完全自动，直到重试次数用完。")
 
         for c in (self.ck_save, self.ck_auto, self.ck_startup, self.ck_minimized,
                   self.ck_manual):
