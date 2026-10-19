@@ -57,6 +57,10 @@ Source: "silent_run.vbs.tmpl"; DestDir: "{app}"; DestName: "silent_run.vbs"
 ; 桌面：手动点击，控制台显示进度与结果
 Name: "{autodesktop}\CampusLink 认证"; Filename: "{app}\{#MyAppExeName}"; \
   WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+; 桌面 2：修改账号密码用（强制重新配置）
+Name: "{autodesktop}\CampusLink 配置"; Filename: "{app}\{#MyAppExeName}"; \
+  Parameters: "--setup"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; \
+  Tasks: desktopicon
 ; 启动文件夹：指向 wscript + vbs，开机以隐藏窗口静默认证
 Name: "{userstartup}\CampusLink 静默认证"; \
   Filename: "wscript.exe"; Parameters: """{app}\silent_run.vbs"""; \

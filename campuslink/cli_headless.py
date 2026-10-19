@@ -183,7 +183,10 @@ def _trace(msg: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI 主入口。返回进程退出码。"""
-    silent = "--silent" in (argv or sys.argv[1:])
+    argv = list(argv or sys.argv[1:])
+    silent = "--silent" in argv
+    force_setup = "--setup" in argv
+    argv = [a for a in argv if a not in ("--silent", "--setup")]
 
     # 日志永远开着：静默模式的失败全靠它。必须在最前面初始化，
     # 之后所有 _trace/log 调用才有落点。
@@ -199,7 +202,9 @@ def main(argv: list[str] | None = None) -> int:
     _trace(f"配置加载：{'存在' if cfg else '不存在'}")
     # 首次/重新配置的**唯一判据**：json 是否存在且三字段齐全（学号/账号/密码）。
     # 与网络状态无关——已联网也要先把账号存进 json，断网时才能静默使用。
-    if cfg is None or not cfg.complete():
+    if force_setup:
+        _trace("手动指定 --setup → 强制重新配置")
+    if cfg is None or not cfg.complete() or force_setup:
         if cfg is not None and not cfg.complete():
             _trace("配置存在但字段不完整 → 重新配置")
         if silent:

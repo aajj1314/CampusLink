@@ -80,6 +80,7 @@ class TestCliConfig:
 class TestRunSetup:
     def test_happy_path(self, tmp_path, monkeypatch):
         import io
+        monkeypatch.setattr(H.paths, "data_dir", lambda: tmp_path)  # 防污染真实配置
         out = io.StringIO()
         monkeypatch.setattr(H.sys, "stdin",
                             io.StringIO("2353100416\n\nmypassword\n"))
@@ -103,13 +104,14 @@ class TestRunSetup:
 
     def test_save_failure_reports_none(self, tmp_path, monkeypatch):
         import io
+        monkeypatch.setattr(H.paths, "data_dir", lambda: tmp_path / "no-dir")
         out = io.StringIO()
         monkeypatch.setattr(H.sys, "stdin",
                             io.StringIO("s\n\np\n"))
         # save 目标目录不存在 → 失败
         cfg = H.run_setup(out)
         assert cfg is not None                 # run_setup 本身成功
-        assert cfg.save(tmp_path / "no-dir" / "x.json") is False
+        assert cfg.save(tmp_path / "no-dir" / "sub" / "x.json") is False
 
 
 # ============================================================ 退出码语义
