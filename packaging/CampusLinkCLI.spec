@@ -7,9 +7,13 @@ CampusLinkCLI 打包规格 —— 无人值守认证（headless）。
 
 与 GUI 版（CampusLink.spec）的关键差异：
 
-1. **console=False + 程序内 AllocConsole。**
-   开机静默启动不能闪黑框；手动点击时 cli_headless.ensure_console()
-   会动态分配控制台。一个 exe 覆盖两种模式。
+1. **console=True + 安装器生成 silent_run.vbs。**
+   手动双击桌面图标：控制台直接显示进度与结果。
+   开机静默：Startup 快捷方式指向 wscript.exe + silent_run.vbs，
+   vbs 以隐藏窗口（Run 0）启动 exe，黑框完全不可见。
+   **不要改回 windowed + 程序内 AllocConsole**：标准流重定向在
+   windowed 下是坑窝（TextIOWrapper 参数 / CONIN$ 交互 / 编码），
+   已实际踩崩一次（2026-10-19）。
 
 2. **excludes 掉 PySide6 / keyring / cryptography / ddddocr / cv2。**
    CLI 不用 Qt（-96MB）；密码明文存 json 不用凭据管理器（-16MB）；
@@ -103,7 +107,9 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,                  # UPX 压缩过的 exe 更容易被杀软误报
-    console=False,              # windowed：开机静默不闪黑框，控制台由程序按需分配
+    console=True,               # 原生控制台：手动模式显示进度结果；
+                                # 静默模式由 silent_run.vbs 以隐藏窗口启动，
+                                # 黑框不可见（勿改回 windowed+AllocConsole）
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

@@ -12,7 +12,9 @@
 """
 from __future__ import annotations
 
+import io
 import json
+import sys
 
 import pytest
 
@@ -147,69 +149,31 @@ class TestExitCodes:
         assert warned and "初始配置" in warned[0]
 
 
-# ============================================================ 快捷方式约定
-class TestShortcuts:
-    def test_startup_shortcut_silently_authenticates(self, tmp_path, monkeypatch):
-        """Startup 快捷方式必须带 --silent —— 这是「开机静默」的实现载体。"""
-        calls = []
-
-        def fake_ps(cmd, **kw):
-            cmd_str = " ".join(cmd)
-            calls.append(cmd_str)
-
-            class _R:
-                returncode = 0
-                stdout = ("C:\\fake\\Desktop" if "'Desktop'" in cmd_str
-                          else "C:\\fake\\Startup")
-                stderr = ""
-            return _R()
-
-        monkeypatch.setattr(H.subprocess, "run", fake_ps)
-        target = tmp_path / "CampusLinkCLI.exe"
-        target.write_bytes(b"")
-        ok_d, ok_s = H.install_shortcuts(target)
-        # 4 次调用 = 2 次查特殊文件夹路径 + 2 次创建 .lnk
-        assert ok_d and ok_s and len(calls) == 4
-        creations = [c for c in calls if "CreateShortcut" in c]
-        assert len(creations) == 2
-        startup_cmd = next(c for c in creations if "Startup" in c)
-        desktop_cmd = next(c for c in creations if "Desktop" in c)
-        assert "--silent" in startup_cmd
-        assert "--silent" not in desktop_cmd   # 手动模式要看结果
-
-    def test_shell_folder_uses_environment_api(self, monkeypatch):
-        """桌面路径必须走 GetFolderPath（OneDrive 重定向才拿得对）。"""
-        seen = []
-        monkeypatch.setattr(H.subprocess, "run",
-                            lambda cmd, **kw: seen.append(" ".join(cmd))
-                            or _FakeResult())
-        H._shell_folder("Desktop")
-        assert any("GetFolderPath" in c for c in seen)
-
-
-class _FakeResult:
-    returncode = 0
-    stdout = "C:\\fake"
-    stderr = ""
-
-
 # ============================================================ 控制台
 class TestConsole:
-    def test_ensure_console_in_dev_session(self):
-        """开发环境（已有控制台）下应直接返回 True，不重复分配。"""
-        assert H.ensure_console() is True
-
-    def test_silent_mode_never_opens_console(self, monkeypatch):
-        """--silent 绝不能分配控制台（开机闪黑框是事故）。"""
-        opened = []
-        monkeypatch.setattr(H, "ensure_console",
-                            lambda: opened.append(1) or True)
+    def test_silent_mode_never_touches_stdout(self):
+        """--silent 的输出全走日志，stdout 不参与（隐藏窗口运行）。"""
         out = H._open_console_out(silent=True)
-        assert out is None and not opened
+        assert out is None
 
-    def test_manual_mode_opens_console(self, monkeypatch):
-        monkeypatch.setattr(H, "ensure_console", lambda: True)
-        assert H._open_console_out(silent=False) is H.sys.stdout
+    def test_manual_mode_uses_stdout(self):
+        """console 打包下手动模式直接用 stdout。"""
+        import io
+        orig = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            out = H._open_console_out(silent=False)
+            assert out is sys.stdout
+        finally:
+            sys.stdout = orig
+
+    def test_never_returns_none(self, monkeypatch):
+        """stdout 意外不可用（windowed 残留场景）也必须返回可写对象。"""
+        monkeypatch.setattr(sys, "stdout", None)
+        out = H._open_console_out(silent=False)
+        assert out is not None
+        out.write("x")            # 不抛
+        out.flush()
 
 
 # ============================================================ 认证行为

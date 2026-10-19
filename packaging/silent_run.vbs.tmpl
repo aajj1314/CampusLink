@@ -1,0 +1,4 @@
+' CampusLink 静默启动包装器
+' 以隐藏窗口方式运行认证程序（黑框完全不可见），跑完自动退出。
+' __APPDIR__ 由安装器在安装时替换为真实安装目录。
+CreateObject("WScript.Shell").Run """__APPDIR__\CampusLinkCLI.exe"" --silent", 0, False

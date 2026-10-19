@@ -49,26 +49,47 @@ WizardStyle=modern
 
 [Files]
 Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 静默启动包装器：vbs 以隐藏窗口运行 exe（黑框完全不可见）
+Source: "silent_run.vbs.tmpl"; DestDir: "{app}"; DestName: "silent_run.vbs"; \
+  AfterInstall: ConvertVbsAppPath
 
 [Icons]
-; 桌面：手动点击，控制台显示进度与结果（程序内 AllocConsole）
+; 桌面：手动点击，控制台显示进度与结果
 Name: "{autodesktop}\CampusLink 认证"; Filename: "{app}\{#MyAppExeName}"; \
   WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-; 启动文件夹：开机静默（--silent），无窗口无弹窗
-Name: "{userstartup}\CampusLink 静默认证"; Filename: "{app}\{#MyAppExeName}"; \
-  Parameters: "--silent"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; \
-  Tasks: startupicon
+; 启动文件夹：指向 wscript + vbs，开机以隐藏窗口静默认证
+Name: "{userstartup}\CampusLink 静默认证"; \
+  Filename: "wscript.exe"; Parameters: """{app}\silent_run.vbs"""; \
+  WorkingDir: "{app}"; Tasks: startupicon
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式（手动认证用）"; \
   GroupDescription: "快捷方式:"; Flags: checkedonce
-Name: "startupicon"; Description: "开机自动认证（加入启动文件夹，完全静默）"; \
-  GroupDescription: "快捷方式:"; Flags: checkedonce unchecked
+Name: "startupicon"; Description: "开机自动认证（完全静默，无窗口）"; \
+  GroupDescription: "快捷方式:"; Flags: checkedonce
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "立即运行首次配置"; \
   Flags: nowait postinstall skipifsilent
 
+[Code]
+// 把 silent_run.vbs 里的占位符替换成真实安装目录（安装路径可变）
+procedure ConvertVbsAppPath;
+var
+  Vbs: string;
+  Content: string;
+  AppDir: string;
+begin
+  Vbs := ExpandConstant('{app}\silent_run.vbs');
+  AppDir := ExpandConstant('{app}');
+  if LoadStringFromFile(Vbs, Content) then
+  begin
+    StringChangeEx(Content, '__APPDIR__', AppDir, True);
+    SaveStringToFile(Vbs, Content, False);
+  end;
+end;
+
 [UninstallDelete]
 ; json 里存有明文密码，卸载必须清掉
 Type: files; Name: "{userappdata}\CampusLink\data\cli_config.json"
+Type: files; Name: "{app}\silent_run.vbs"
