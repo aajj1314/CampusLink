@@ -23,7 +23,7 @@
 
 ; 上一级目录（本文件在 packaging/ 下）
 #define ProjectRoot SourcePath + ".."
-#define DistDir ProjectRoot + "\dist\CampusLink"
+#define DistDir ProjectRoot + "\dist4\CampusLink"
 
 [Setup]
 AppId={#MyAppId}
