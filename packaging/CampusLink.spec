@@ -11,9 +11,11 @@ PyInstaller 打包规格。
    onefile 每次运行都要把几百 MB 解压到 %TEMP%，启动要十几秒。
    本项目是常驻托盘的程序，onedir 启动不到 2 秒，明显更合适。
 
-2. **必须 --collect-all onnxruntime / keyring。**
+2. **必须 --collect-all onnxruntime / keyring / pydivert。**
    onnxruntime 的原生 DLL 是 data 文件，PyInstaller 的静态分析看不见，
    不收集的话编译能过、运行时才报 "No such file or directory: common.onnx"。
+   pydivert 同理：WinDivert.dll 和 WinDivert64.sys 是包数据，缺了共享助手
+   会报「pydivert 不可用」。
    （2.0 起 ddddocr / cv2 已剥离，见 excludes 段的说明。）
 
 3. **排除用不到的 Qt 模块。**
@@ -123,7 +125,7 @@ excludes = [
 # 用 excludes 硬排除，防止静态分析把它们拽回来。
 binaries = []
 _missing = []
-for pkg in ("onnxruntime", "keyring"):
+for pkg in ("onnxruntime", "keyring", "pydivert"):
     try:
         d, b, h = collect_all(pkg)
         datas += d

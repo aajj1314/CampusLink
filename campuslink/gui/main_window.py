@@ -18,13 +18,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QGuiApplication
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QGridLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-                               QMenu, QMessageBox, QPushButton, QScrollArea,
-                               QSizePolicy, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame,
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QMainWindow, QMenu, QMessageBox, QPushButton,
+                               QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from .. import APP_TITLE, __version__, autostart, paths, profiles
 from ..config import AppConfig
+from ..core import hotspot
 from ..core.authenticator import Authenticator
 from ..core.models import Credentials, LoginResult, NetworkState, Operator
 from ..logging_setup import get_logger, register_secret
@@ -86,6 +87,9 @@ class MainWindow(QMainWindow):
         self._mode = "independent"    # independent | managed | degraded
         self._managed = False
 
+        # ---- 校园网共享（TTL 修复）----
+        self._fixer = hotspot.TtlFixer()
+
         self.setWindowTitle(APP_TITLE)
         self.setWindowIcon(style.app_icon(128))
         self.setMinimumSize(520, 640)
@@ -132,6 +136,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._build_form_card())
         lay.addWidget(self._build_option_card())
         lay.addWidget(self._build_router_card())
+        lay.addWidget(self._build_hotspot_card())
         lay.addLayout(self._build_actions())
         lay.addWidget(self._build_status_area())
         lay.addStretch(1)
@@ -299,6 +304,46 @@ class MainWindow(QMainWindow):
         self.btn_pair.setEnabled(False)
         return card
 
+    # ---------------------------------------------------------------- 校园网共享
+    def _build_hotspot_card(self) -> QWidget:
+        card = QFrame()
+        card.setObjectName("Card")
+        box = QVBoxLayout(card)
+        box.setContentsMargins(18, 14, 18, 14)
+        box.setSpacing(6)
+
+        title = QLabel("校园网共享（手机/平板连热点）")
+        title.setObjectName("SectionTitle")
+        box.addWidget(title)
+
+        self.ck_hotspot = QCheckBox("启用共享助手（修复 TTL，热点连上才能上网）")
+        self.ck_hotspot.setToolTip(
+            "校园网出口的代理回包 TTL=1，Windows 转发时递减到 0 会直接丢弃——\n"
+            "不修就是「手机连上热点、网页全打不开」。\n"
+            "助手用 WinDivert 把这类包救回来，并把转发的包 TTL 统一为 64。\n"
+            "需要管理员权限（WinDivert 要装驱动）；热点本身请用下面的按钮打开设置开启。")
+        box.addWidget(self.ck_hotspot)
+
+        self.lb_hotspot = QLabel("")
+        self.lb_hotspot.setObjectName("Hint")
+        self.lb_hotspot.setWordWrap(True)
+        box.addWidget(self.lb_hotspot)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.btn_admin = QPushButton("以管理员重启")
+        self.btn_admin.setObjectName("Ghost")
+        self.btn_admin.setCursor(Qt.PointingHandCursor)
+        self.btn_admin.setVisible(False)
+        row.addWidget(self.btn_admin)
+        self.btn_hotspot_settings = QPushButton("打开移动热点设置")
+        self.btn_hotspot_settings.setObjectName("Ghost")
+        self.btn_hotspot_settings.setCursor(Qt.PointingHandCursor)
+        row.addWidget(self.btn_hotspot_settings)
+        row.addStretch(1)
+        box.addLayout(row)
+        return card
+
     # ---------------------------------------------------------------- 按钮
     def _build_actions(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -399,6 +444,15 @@ class MainWindow(QMainWindow):
 
         # ---- Router 视觉节点 ----
         self.ck_vision.toggled.connect(self._on_vision_toggled)
+        self.ck_hotspot.toggled.connect(self._on_hotspot_toggled)
+        self.btn_admin.clicked.connect(self._on_admin_restart)
+        self.btn_hotspot_settings.clicked.connect(hotspot.open_hotspot_settings)
+
+        # 共享状态每 3 秒刷新（热点是否开、改包计数）
+        self._hotspot_timer = QTimer(self)
+        self._hotspot_timer.setInterval(3000)
+        self._hotspot_timer.timeout.connect(self._refresh_hotspot)
+        self._hotspot_timer.start()
         self.btn_pair.clicked.connect(self._on_pair_clicked)
         self.ed_router.textChanged.connect(self._schedule_save)
         self._routerReachable.connect(self._on_router_reachable)
@@ -439,6 +493,11 @@ class MainWindow(QMainWindow):
         self.ed_router.setEnabled(c.vision_node_enabled)
         self.btn_pair.setEnabled(c.vision_node_enabled)
 
+        # 上次开启过共享助手：管理员身份下自动拉起
+        self.ck_hotspot.setChecked(c.hotspot_ttl)
+        if c.hotspot_ttl:
+            QTimer.singleShot(300, self._on_hotspot_toggled_restore)
+
         # 开机启动以注册表实际状态为准，不信配置文件里的值
         if autostart.supported():
             real = autostart.is_enabled()
@@ -468,6 +527,7 @@ class MainWindow(QMainWindow):
         c.captcha_manual = self.ck_manual.isChecked()
         c.vision_node_enabled = self.ck_vision.isChecked()
         c.router_url = self.ed_router.text().strip()
+        c.hotspot_ttl = self.ck_hotspot.isChecked()
         c.profile_name = self.profile.name
         c.save()
 
@@ -528,6 +588,64 @@ class MainWindow(QMainWindow):
         self.ck_auto.setChecked(on)
 
     # ================================================================ Router 视觉节点
+    # ---------------------------------------------------------------- 共享助手
+    def _on_hotspot_toggled(self, checked: bool) -> None:
+        if self._loading:
+            return
+        if not checked:
+            self._fixer.stop()
+            self._refresh_hotspot()
+            self._schedule_save()
+            return
+
+        ok, msg = self._fixer.start()
+        if not ok:
+            self.ck_hotspot.setChecked(False)      # 回滚勾选
+            if "管理员" in msg:
+                self.lb_hotspot.setText(
+                    "共享助手需要管理员权限：点下方「以管理员重启」，重启后会自动启用。")
+                self.btn_admin.setVisible(True)
+            else:
+                self.lb_hotspot.setText(f"共享助手启动失败：{msg}")
+            return
+
+        self.lb_hotspot.setText(msg)
+        self._schedule_save()
+
+    def _on_hotspot_toggled_restore(self) -> None:
+        """启动时恢复上次的共享开关（提权重启后自动回到这里）。"""
+        if not self.ck_hotspot.isChecked():
+            return
+        ok, msg = self._fixer.start()
+        if ok:
+            self.lb_hotspot.setText(msg)
+        else:
+            # 非管理员：保持勾选（重启后自动生效），提示提权按钮
+            self.lb_hotspot.setText(
+                f"共享助手待启用：{msg}。点「以管理员重启」生效。")
+            self.btn_admin.setVisible(True)
+
+    def _on_admin_restart(self) -> None:
+        """保存当前配置 → UAC 提权重启（重启后 cfg.hotspot_ttl 自动拉起重启）。"""
+        self.cfg.hotspot_ttl = True
+        self._persist()
+        if hotspot.relaunch_as_admin():
+            self._quitting = True
+            QApplication.instance().quit()
+        else:
+            self.lb_hotspot.setText("UAC 被取消，共享助手未启用。")
+
+    def _refresh_hotspot(self) -> None:
+        st = hotspot.collect_status(self._fixer)
+        self.lb_hotspot.setText(
+            f"{st.ready_hint}"
+            + (f"　｜　回程改写 {st.packets_in} 包 · 出站 {st.packets_out} 包"
+               if st.ttl_running else "")
+            + (f"\n最近错误：{st.last_error}" if st.last_error else ""))
+        self.btn_admin.setVisible(not st.admin and st.pydivert_ok)
+        # 无 pydivert 时禁用开关，避免用户反复点
+        self.ck_hotspot.setEnabled(st.pydivert_ok)
+
     def _on_vision_toggled(self, checked: bool) -> None:
         if self._loading:
             return
@@ -915,6 +1033,10 @@ class MainWindow(QMainWindow):
         self.hide_to_tray()
 
     def quit_app(self) -> None:
+        try:
+            self._fixer.stop()
+        except Exception:
+            pass
         self._quitting = True
         self._shutdown()
         QGuiApplication.quit()

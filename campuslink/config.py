@@ -49,6 +49,11 @@ class AppConfig:
     vision_node_enabled: bool = False  # 作为视觉节点连接 Router
     router_url: str = ""               # Router 地址，如 http://192.168.1.1:7700
 
+    # --- 校园网共享（Windows 移动热点 TTL 修复）---
+    #: 启用共享助手：修 inbound TTL<=1（救回校园网代理 SYN-ACK）与出站 TTL 归一。
+    #: 需要管理员权限 + pydivert；失败不影响认证功能。
+    hotspot_ttl: bool = False
+
     # --- 状态 ---
     first_run_done: bool = False      # 首次启动引导是否走完
 
@@ -69,6 +74,7 @@ class AppConfig:
                          ("start_minimized", bool), ("minimize_to_tray", bool),
                          ("close_to_tray", bool), ("autostart", bool),
                          ("vision_node_enabled", bool),
+                         ("hotspot_ttl", bool),
                          ("captcha_manual", bool),
                          ("first_run_done", bool)):
             if key in clean:
