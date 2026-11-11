@@ -966,7 +966,7 @@ class MainWindow(QMainWindow):
         self.start_connect()
 
     def _start_warmup(self) -> None:
-        self._warmup = WarmupWorker(self)
+        self._warmup = WarmupWorker(self, self.profile.captcha_mode)
         self._warmup.start()
 
     # ================================================================ 杂项

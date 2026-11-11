@@ -303,6 +303,31 @@ class CrnnMathRecognizer:
         return text, conf, {}
 
 
+    def warmup(self) -> bool:
+        """
+        预热：建 ONNX 会话 + 跑一次空推理。
+
+        首次加载模型要 1~2 秒，在后台线程做掉，用户点「立即连接」时
+        就是热启动。失败返回 False（真到识别时还会重试，不影响使用）。
+        """
+        sess = self._get_session()
+        if sess is None:
+            return False
+        try:
+            import numpy as np
+
+            name = self._input_name
+            if not name:
+                name = sess.get_inputs()[0].name
+                self._input_name = name
+            sess.run(None, {name: np.zeros((1, 1, IMG_H, IMG_W),
+                                           dtype=np.float32)})
+            return True
+        except Exception:
+            self._load_error = "预热推理失败"
+            return False
+
+
 # ============================================================ 单例
 _singleton_lock = threading.Lock()
 _singleton: CrnnMathRecognizer | None = None

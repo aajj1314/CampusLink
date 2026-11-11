@@ -351,3 +351,20 @@ class TestImportPurity:
                 continue                       # 函数内的延迟导入是设计
             if re.match(r"^(import|from)\s+(numpy|onnxruntime|PIL)\b", line.strip()):
                 pytest.fail(f"顶层不应 import 重依赖：{line!r}")
+
+
+class TestWarmup:
+    def test_warmup_loads_session(self):
+        """预热：模型在时应能建会话 + 空推理（热启动的来源）。"""
+        from campuslink.core import crnn_math
+
+        r = crnn_math.CrnnMathRecognizer()
+        if r.path is None:
+            pytest.skip("本机无模型文件")
+        assert r.warmup() is True
+
+    def test_warmup_without_model_returns_false(self, tmp_path):
+        from campuslink.core import crnn_math
+
+        r = crnn_math.CrnnMathRecognizer(str(tmp_path / "missing.onnx"))
+        assert r.warmup() is False

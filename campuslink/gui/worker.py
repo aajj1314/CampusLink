@@ -186,21 +186,42 @@ class MonitorWorker(QThread):
 
 class WarmupWorker(QThread):
     """
-    后台预热识别引擎（2.0：字符型 ddddocr 可选；缺失时预热静默跳过）。
+    后台预热**实际会用到的**识别引擎（算式门户 → ONNX 模型）。
 
-    首次加载 ONNX 要 1～2 秒，放在这里做，用户点「立即连接」时就是热启动。
-    失败也无所谓 —— 真到识别的时候再加载就是了，所以异常直接吞掉。
+    2.0 剥离 ddddocr 后，算式门户走 crnn_math 的 ONNX 模型；字符型门户
+    才走 ocr 模块。预热错引擎曾经报「ModuleNotFoundError: ddddocr」——
+    现在按门户的 captcha_mode 分流，并且把异常消息完整记进日志。
+    失败不影响使用：真到识别时还会重新加载。
     """
 
     done = Signal(bool)
 
+    def __init__(self, parent=None, captcha_mode: str = "text"):
+        super().__init__(parent)
+        self._mode = captcha_mode
+
     def run(self) -> None:
         ok = False
         try:
-            from ..core import ocr
-            ocr.warmup()
-            ok = True
-            log.info("验证码识别模型已预热")
+            if self._mode == "math":
+                from ..core import crnn_math
+
+                r = crnn_math.get_recognizer()
+                ok = bool(r and r.warmup())
+                if ok:
+                    log.info("算式识别模型已预热")
+                else:
+                    log.info("算式识别模型不可用（预热跳过）")
+            else:
+                from ..core import ocr
+
+                ocr.warmup()
+                ok = True
+                log.info("字符验证码识别引擎已预热")
+        except ModuleNotFoundError as exc:
+            # 可选依赖缺失（如字符型门户的 ddddocr）→ 提示性日志，不告警
+            log.info("预热跳过（可选依赖缺失）: %s", exc)
         except Exception as exc:
-            log.warning("模型预热失败（不影响使用）: %s", type(exc).__name__)
+            log.warning("模型预热失败（不影响使用）: %s: %s",
+                        type(exc).__name__, exc)
         self.done.emit(ok)
