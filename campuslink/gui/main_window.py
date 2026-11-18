@@ -84,6 +84,15 @@ class MainWindow(QMainWindow):
         #: 最近一次已知的网络状态。StatusPill 只存文字，不存枚举，
         #: 而账号切换要判断"要不要先注销"，所以这里单独记一份。
         self._current_state: NetworkState = NetworkState.UNKNOWN
+        #: 主动注销后抑制自动重连（2026-11-18）。
+        #:
+        #: 为什么必须有：用户点「注销」就是为了腾出会话名额，
+        #: 自动重连会把操作抵消掉（实测 1 秒内就登回去了）。
+        #: 置 True 后 `_on_dropped` 不再自动认证；
+        #: 用户**手动**点「立即连接」时清掉（见 start_connect）。
+        self._suppress_auto_reconnect: bool = False
+        #: 抑制原因，用于日志和界面提示（"用户注销" / "切换账号"）
+        self._suppress_reason: str = ""
         self._warmup: WarmupWorker | None = None
         self._loading = True          # 装载配置期间不要触发保存
         self._quitting = False
@@ -218,6 +227,16 @@ class MainWindow(QMainWindow):
         self.btn_account_add.setCursor(Qt.PointingHandCursor)
         self.btn_account_add.setToolTip("把当前填写的内容存为新账号")
         acc_row.addWidget(self.btn_account_add)
+
+        #: 改名（2026-11-18 补）。
+        #: Account.label 这个字段原来只有数据结构、没有任何输入入口，
+        #: 等于死代码 —— 下拉框只能显示学工号，多账号时不好区分。
+        self.btn_account_rename = QPushButton("改名")
+        self.btn_account_rename.setObjectName("Eye")
+        self.btn_account_rename.setFixedWidth(52)
+        self.btn_account_rename.setCursor(Qt.PointingHandCursor)
+        self.btn_account_rename.setToolTip("给当前账号起个备注名（如「我」「室友」）")
+        acc_row.addWidget(self.btn_account_rename)
 
         self.btn_account_del = QPushButton("删除")
         self.btn_account_del.setObjectName("Eye")
@@ -518,6 +537,7 @@ class MainWindow(QMainWindow):
         # 多账号（2026-11-18）
         self.cb_account.currentIndexChanged.connect(self._on_account_changed)
         self.btn_account_add.clicked.connect(self._on_account_add)
+        self.btn_account_rename.clicked.connect(self._on_account_rename)
         self.btn_account_del.clicked.connect(self._on_account_del)
         self.btn_logs.clicked.connect(self.open_logs)
         self.btn_about.clicked.connect(self.show_about)
@@ -578,7 +598,12 @@ class MainWindow(QMainWindow):
         idx = self.cb_operator.findText(c.operator)
         self.cb_operator.setCurrentIndex(idx if idx >= 0 else 0)
 
-        pwd = c.get_password()
+        # 密码从**当前账号**的凭据键取（2026-11-18 修）。
+        #
+        # 原来用 `c.get_password()`，它走 effective_account（顶层镜像）。
+        # 单账号时两者一致，多账号下只有恰好选中最后编辑的那条才对。
+        acc = c.current_account()
+        pwd = secrets.load(self.profile.name, acc.effective_account())
         if pwd:
             self.ed_password.setText(pwd)
             register_secret(pwd)      # 登记脱敏，之后日志里不会再出现它
@@ -643,20 +668,53 @@ class MainWindow(QMainWindow):
         c.ua_mask = self.ck_ua_mask.isChecked()
         c.target_ua = self.ed_target_ua.text().strip() or ua_mask.DEFAULT_UA
         c.profile_name = self.profile.name
-
-        # 多账号：把当前编辑的内容同步进选中的那条（2026-11-18）
-        idx = c.current_account_index
-        if 0 <= idx < len(c.accounts):
-            old = c.accounts[idx]
-            old = old if isinstance(old, Account) else Account.from_dict(old)
-            c.accounts[idx] = Account(
-                label=old.label,
-                student_id=c.student_id,
-                account=c.account,
-                operator=c.operator,
-            )
-
         c.save()
+
+    def _sync_form_into_current_account(self) -> None:
+        """
+        把表单里的账号信息写进 accounts[当前索引]（2026-11-18 修）。
+
+        ## 为什么单独抽出来，不放在 _persist 里
+
+        原来的实现把「同步」写在 `_persist` 里，而 `_persist` 会被
+        **每一次输入变化**触发（有 400ms 去抖）。后果是：
+
+            用户有个账号 A-OLD，改了学工号框 → 400ms 后
+            accounts[0] 被悄悄改成 A-NEW，而 A-OLD 的密码条目
+            还留在旧键下成了孤儿 —— 用户的密码就这么丢了。
+
+        （实测复现：凭据 A-OLD='' / A-NEW='pwd-new'）
+
+        现在改成**只在明确动作时同步**：
+          · 勾选「保存账号信息」并存密码时
+          · 点「新增」时（那里本来就走 add_account）
+          · 离开当前账号前（切换账号时由 _load_account_into_form 负责）
+
+        单纯打字不改 accounts —— 那只是「正在编辑」，不是「已确认」。
+
+        返回当前账号索引（-1 表示没有列表账号）。
+        """
+        c = self.cfg
+        idx = c.current_account_index
+        if not (0 <= idx < len(c.accounts)):
+            return -1
+        old = c.accounts[idx]
+        old = old if isinstance(old, Account) else Account.from_dict(old)
+        new_student = self.ed_student.text().strip()
+        new_account = self.ed_account.text().strip()
+
+        # 学工号和上网账号都没变时不动 —— 避免把空白写进去
+        if not new_student and not new_account:
+            return idx
+
+        c.accounts[idx] = Account(
+            label=old.label,              # ⚠️ label 不动：它是用户起的名字，不是表单字段
+            student_id=new_student,
+            account=new_account,
+            operator=self.cb_operator.currentText(),
+        )
+        c.set_current_account(c.accounts[idx])
+        return idx
 
     # ================================================== 多账号（2026-11-18）
     def _refresh_account_combo(self) -> None:
@@ -789,6 +847,51 @@ class MainWindow(QMainWindow):
         self.set_status(
             f"已保存账号 {acc.display_name()}（共 {len(c.accounts)} 套）", "ok")
 
+    def _on_account_rename(self) -> None:
+        """
+        给当前账号起备注名（2026-11-18 补）。
+
+        原来 `Account.label` 只有数据结构、没有输入入口 —— 死代码。
+        后果：下拉框只能显示学工号（如 2354400513），两套账号时
+        看不出哪个是「我的」、哪个是「室友的」。
+
+        交互上不弹输入框：QInputDialog 在无边框/深色主题下样式很难看，
+        而且这一步不是高频操作。改成原地改 —— 下拉框本身可编辑，
+        用户直接在里面改名字，改完按回车/失焦即生效。
+
+        等等，其实这里用 QInputDialog 更直观。见下方实现。
+        """
+        from PySide6.QtWidgets import QInputDialog
+
+        c = self.cfg
+        idx = c.current_account_index
+        if not (0 <= idx < len(c.accounts)):
+            self.set_status("没有可改名的账号，请先点「新增」", "warn")
+            return
+
+        acc = c.accounts[idx]
+        acc = acc if isinstance(acc, Account) else Account.from_dict(acc)
+
+        name, ok = QInputDialog.getText(
+            self, "账号备注名",
+            "给这个账号起个名字（留空则显示学工号）：\n"
+            f"当前账号：{acc.student_id or acc.effective_account()}",
+            text=acc.label,
+        )
+        if not ok:
+            return
+
+        c.accounts[idx] = Account(
+            label=name.strip(),
+            student_id=acc.student_id,
+            account=acc.account,
+            operator=acc.operator,
+        )
+        c.save()
+        self._refresh_account_combo()
+        self.set_status(
+            f"已改名：{c.accounts[idx].display_name()}", "ok")
+
     def _on_account_del(self) -> None:
         """「删除」按钮：删掉下拉框选中的那套账号。"""
         c = self.cfg
@@ -851,27 +954,96 @@ class MainWindow(QMainWindow):
                 return
             self._store_password()
         else:
-            self.cfg.forget_password()
+            # 只删**当前账号**的凭据（2026-11-18 修）。
+            # 原来调 cfg.forget_password()，走顶层镜像键 ——
+            # 多账号下会误删别的账号的密码。
+            acc = self.cfg.current_account()
+            secrets.delete(self.profile.name, acc.effective_account())
             self.set_status("已从系统凭据管理器中删除保存的密码", "info")
 
     def _store_password(self) -> None:
+        """
+        存密码到系统凭据管理器（2026-11-18 重写）。
+
+        ## 原来的两个问题
+
+        1. **用的是 `cfg.set_password()`，键走顶层镜像字段。**
+           顶层字段是「最后一次输入的学工号」，不一定等于用户以为的
+           「当前账号」。多账号下会存错地方。
+
+        2. **存之前调 `_persist()`，而它会把 accounts[索引] 也改成
+           表单里的新值** —— 用户改了个学工号再来勾保存，
+           旧账号的密码条目就成孤儿了（实测复现过）。
+
+        ## 现在的顺序
+
+            先把表单同步进 accounts[当前索引]（明确的用户动作，可以同步）
+            → 用**同步后那个账号**的实际键存密码
+            → 如果键变了（用户改了学工号），把旧键的密码删掉
+        """
         pwd = self.ed_password.text()
         if not pwd:
             self.set_status("请先输入密码再勾选「保存账号信息」", "warn")
             self.ck_save.setChecked(False)
             return
-        account = self.ed_account.text().strip() or self.ed_student.text().strip()
-        if not account:
+
+        student = self.ed_student.text().strip()
+        account = self.ed_account.text().strip()
+        if not (student or account):
             self.set_status("请先填写学(工)号，再保存密码", "warn")
             self.ck_save.setChecked(False)
             return
-        self._persist()               # 先把账号写进配置，凭据条目名要用到它
-        if self.cfg.set_password(pwd):
-            register_secret(pwd)
-            self.set_status("密码已保存到系统凭据管理器", "ok")
+
+        c = self.cfg
+        idx = c.current_account_index
+
+        # 记下同步前的凭据键 —— 改过学工号时要清理旧条目，
+        # 否则旧密码永远留在凭据管理器里，用户下次填回旧学工号
+        # 会莫名其妙被自动登录（且用的是过期密码）
+        old_key = ""
+        old_label = ""
+        if 0 <= idx < len(c.accounts):
+            prev = c.accounts[idx]
+            prev = prev if isinstance(prev, Account) else Account.from_dict(prev)
+            old_key = prev.effective_account()
+            old_label = prev.label
+
+        # 明确的用户动作：把表单写进当前账号
+        self._sync_form_into_current_account()
+
+        # 用同步后的账号算凭据键
+        if 0 <= idx < len(c.accounts):
+            acc = c.accounts[idx]
+            acc = acc if isinstance(acc, Account) else Account.from_dict(acc)
+            key = acc.effective_account()
         else:
+            # 还没有列表账号（单账号老路径）：直接建一条
+            acc = Account(
+                label=old_label,
+                student_id=student,
+                account=account,
+                operator=self.cb_operator.currentText(),
+            )
+            idx = c.add_account(acc)
+            c.current_account_index = idx
+            c.set_current_account(acc)
+            key = acc.effective_account()
+
+        c.save()
+
+        if not secrets.save(self.profile.name, key, pwd):
             self.ck_save.setChecked(False)
             self.set_status("密码保存失败，请稍后重试", "err")
+            return
+
+        # 键变了 → 删掉旧条目（否则旧密码成为孤儿）
+        if old_key and old_key != key:
+            secrets.delete(self.profile.name, old_key)
+            log.info("学工号变更，已清理旧凭据条目 %s", old_key)
+
+        register_secret(pwd)
+        self.set_status("密码已保存到系统凭据管理器", "ok")
+        self._refresh_account_combo()
 
     def _on_startup_toggled(self, checked: bool) -> None:
         if self._loading:
@@ -1210,6 +1382,15 @@ class MainWindow(QMainWindow):
         if self._auth and self._auth.isRunning():
             return
 
+        # 用户主动点「立即连接」= 明确要上网，解除注销后的抑制（2026-11-18）
+        #
+        # 注意位置：放在这里而不是更早 —— 上面两个 return 是"这次点击没生效"
+        # 的情况（托管模式 / 已在连接），不该把抑制状态清掉。
+        if self._suppress_auto_reconnect:
+            log.info("用户手动连接，解除自动重连抑制")
+            self._suppress_auto_reconnect = False
+            self._suppress_reason = ""
+
         cred = self.current_credentials()
         if not cred.is_complete():
             missing = []
@@ -1226,8 +1407,10 @@ class MainWindow(QMainWindow):
 
         register_secret(cred.password)
 
-        # 勾了保存但还没存过，顺手存一下，省得用户再点一次
-        if self.ck_save.isChecked() and not self.cfg.get_password():
+        # 勾了保存但当前账号还没存过，顺手存一下，省得用户再点一次。
+        # 判断用**当前账号**的凭据键（2026-11-18 修，原来是顶层镜像键）
+        cur_key = self.cfg.current_account().effective_account()
+        if self.ck_save.isChecked() and not secrets.load(self.profile.name, cur_key):
             self._store_password()
 
         self._set_busy(True)
@@ -1295,6 +1478,9 @@ class MainWindow(QMainWindow):
 
     def _on_auth_result(self, res: LoginResult) -> None:
         if res.ok:
+            # 认证成功 = 确定要连网，解除注销后的抑制（2026-11-18）
+            self._suppress_auto_reconnect = False
+            self._suppress_reason = ""
             self.pill.set_state(NetworkState.ONLINE)
             self.set_status(res.message, "ok")
             self.tray.notify("CampusLink", res.message or "认证成功")
@@ -1348,6 +1534,16 @@ class MainWindow(QMainWindow):
         self._set_logout_busy(True)
         self.set_status("正在注销…", "info")
         self.pill.set_state(NetworkState.CHECKING)
+
+        # 注销一开始就抑制自动重连，**不等成功**（2026-11-18 修）。
+        # 理由：注销成功后 1 秒内就会触发 needLoginDetected，
+        # 那时才置标志已经来不及了（实测日志证明）。提前置上更安全 ——
+        # 万一注销失败，_on_logout_result 会把它清掉。
+        self._suppress_auto_reconnect = True
+        self._suppress_reason = (
+            "切换账号" if getattr(self, "_pending_account_switch", None) is not None
+            else "用户注销")
+        log.info("注销开始，抑制自动重连（原因：%s）", self._suppress_reason)
 
         self._logout = LogoutWorker(
             self.authenticator,
@@ -1405,6 +1601,7 @@ class MainWindow(QMainWindow):
     def _on_logout_result(self, res: LoginResult) -> None:
         """注销结果处理 —— 注意：成功不自动重连。"""
         if res.ok:
+            # 成功：保持抑制状态，等用户下次手动点「立即连接」
             self.pill.set_state(NetworkState.NEED_LOGIN)
             self.set_status(res.message, "ok")
             self.tray.notify("CampusLink", res.message or "已注销")
@@ -1426,6 +1623,13 @@ class MainWindow(QMainWindow):
             if self._monitor:
                 self._monitor.request_check()
         else:
+            # 失败：解除抑制 —— 网络可能还连着，也可能真掉了，
+            # 这种时候应该恢复"掉线自动重连"的保护
+            if self._suppress_auto_reconnect:
+                log.info("注销失败，恢复自动重连")
+                self._suppress_auto_reconnect = False
+                self._suppress_reason = ""
+
             # 注销失败不改状态（可能还连着）
             self.set_status(res.message, "err")
             if res.attempts:
@@ -1499,6 +1703,23 @@ class MainWindow(QMainWindow):
 
     def _on_dropped(self) -> None:
         """从「已联网」变成「需要认证」= 掉线了。"""
+        # ⚠️ 主动注销后不能自动重连（2026-11-18 修）
+        #
+        # 用户点「注销」的目的就是「不要再占用会话名额」——比如给手机用。
+        # 如果这时候自动重新认证，等于把用户的操作抵消掉，
+        # 而且会在 1 秒内完成，用户根本来不及反应。
+        #
+        # 实测日志（2026-11-18 23:17）：
+        #   23:17:05  注销验证码 wmhm
+        #   23:17:06  注销验证码 4Gjl
+        #   23:17:07  检测到掉线，自动重新认证   ← 抵消了
+        #   23:17:08  识别 7（算式结果）          ← 又登回去了
+        if self._suppress_auto_reconnect:
+            log.info("主动注销后跳过自动重连（%s）", self._suppress_reason or "用户注销")
+            self.set_status(
+                "已注销，不会自动重连。需要上网时点「立即连接」。", "warn")
+            return
+
         if not self.cfg.auto_connect:
             self.set_status("网络已断开，勾选「断线自动重新认证」可自动恢复", "warn")
             return
