@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame,
 
 from .. import APP_TITLE, __version__, autostart, paths, profiles
 from ..config import Account, AppConfig
-from ..core import hotspot
+from ..core import hotspot, ua_mask
 from ..core.authenticator import Authenticator
 from ..core.models import Credentials, LoginResult, NetworkState, Operator
 from ..logging_setup import get_logger, register_secret
@@ -99,6 +99,10 @@ class MainWindow(QMainWindow):
         # ---- 校园网共享（TTL 修复）----
         self._fixer = hotspot.TtlFixer()
         self._hotspot_busy = False
+
+        # ---- HTTP UA 归一（2026-11-18 新增）----
+        # 与 TTL 修复各用一条 WinDivert 过滤器，互不干扰。
+        self._ua_masker = ua_mask.UaMasker()
 
         self.setWindowTitle(APP_TITLE)
         self.setWindowIcon(style.app_icon(128))
@@ -373,6 +377,38 @@ class MainWindow(QMainWindow):
         self.lb_hotspot.setWordWrap(True)
         box.addWidget(self.lb_hotspot)
 
+        # ---- UA 归一（2026-11-18 新增）----
+        # 与 TTL 修复相互独立：TTL 管 IP 层，UA 管 HTTP 层，可单独开关。
+        self.ck_ua_mask = QCheckBox("统一 HTTP User-Agent（防多设备指纹）")
+        self.ck_ua_mask.setToolTip(
+            "私接检测不只看 TTL，还看 HTTP 请求的 User-Agent：\n"
+            "同一出口出现 iPhone / Android / Windows 多种 UA，\n"
+            "DPI 一眼就知道后面不止一台设备。\n\n"
+            "开启后把所有明文 HTTP 请求的 UA 改成一个值。\n"
+            "⚠️ 只对 HTTP（80 端口）有效；HTTPS 的 UA 在 TLS 加密层里，改不了。\n"
+            "⚠️ 新 UA 不能比原 UA 长，超短 UA（如 curl/8.0）会被跳过。\n"
+            "需要管理员权限。")
+        box.addWidget(self.ck_ua_mask)
+
+        # UA 目标值输入（默认 Mozilla/5.0）
+        ua_row = QHBoxLayout()
+        ua_row.setSpacing(6)
+        lb_ua = QLabel("目标 UA")
+        lb_ua.setObjectName("Hint")
+        ua_row.addWidget(lb_ua)
+        self.ed_target_ua = QLineEdit()
+        self.ed_target_ua.setPlaceholderText("Mozilla/5.0")
+        self.ed_target_ua.setToolTip(
+            "建议保持默认的 Mozilla/5.0（11 字节）。\n"
+            "越长覆盖不到的请求越多（短 UA 请求改不动）。")
+        ua_row.addWidget(self.ed_target_ua, 1)
+        box.addLayout(ua_row)
+
+        self.lb_ua_mask = QLabel("")
+        self.lb_ua_mask.setObjectName("Hint")
+        self.lb_ua_mask.setWordWrap(True)
+        box.addWidget(self.lb_ua_mask)
+
         row = QHBoxLayout()
         row.setSpacing(8)
         self.btn_admin = QPushButton("以管理员重启")
@@ -506,6 +542,8 @@ class MainWindow(QMainWindow):
         # ---- Router 视觉节点 ----
         self.ck_vision.toggled.connect(self._on_vision_toggled)
         self.ck_hotspot.toggled.connect(self._on_hotspot_toggled)
+        self.ck_ua_mask.toggled.connect(self._on_ua_mask_toggled)     # 2026-11-18
+        self.ed_target_ua.textChanged.connect(self._on_target_ua_changed)
         self.btn_admin.clicked.connect(self._on_admin_restart)
         self.btn_hotspot_settings.clicked.connect(hotspot.open_hotspot_settings)
 
@@ -560,6 +598,15 @@ class MainWindow(QMainWindow):
         if c.hotspot_ttl:
             QTimer.singleShot(300, self._on_hotspot_toggled_restore)
 
+        # UA 归一（2026-11-18）：同样按上次的状态恢复
+        self.ed_target_ua.setText(c.target_ua or ua_mask.DEFAULT_UA)
+        self._ua_masker.set_target(c.target_ua or ua_mask.DEFAULT_UA)
+        self.ck_ua_mask.setChecked(c.ua_mask)
+        if c.ua_mask:
+            QTimer.singleShot(400, lambda: self._on_ua_mask_toggled(True))
+        else:
+            QTimer.singleShot(200, self._refresh_ua_mask)
+
         # 多账号下拉框（2026-11-18）：旧配置在 from_dict 里已迁移成一条
         self._refresh_account_combo()
 
@@ -593,6 +640,8 @@ class MainWindow(QMainWindow):
         c.vision_node_enabled = self.ck_vision.isChecked()
         c.router_url = self.ed_router.text().strip()
         c.hotspot_ttl = self.ck_hotspot.isChecked()
+        c.ua_mask = self.ck_ua_mask.isChecked()
+        c.target_ua = self.ed_target_ua.text().strip() or ua_mask.DEFAULT_UA
         c.profile_name = self.profile.name
 
         # 多账号：把当前编辑的内容同步进选中的那条（2026-11-18）
@@ -845,6 +894,77 @@ class MainWindow(QMainWindow):
         self.ck_auto.setChecked(on)
 
     # ================================================================ Router 视觉节点
+    # ---------------------------------------------------------------- UA 归一
+    def _on_ua_mask_toggled(self, checked: bool) -> None:
+        """
+        开启/关闭 HTTP UA 归一（2026-11-18 新增）。
+
+        与 TTL 修复的关系：两者独立，各自一条 WinDivert 过滤器。
+        可以只开 TTL、只开 UA、或都开。都开时互不干扰
+        （TTL 抓所有包，UA 只抓 80 端口的 outbound）。
+        """
+        if self._loading:
+            return
+
+        if not checked:
+            self._ua_masker.stop()
+            self._refresh_ua_mask()
+            self._schedule_save()
+            return
+
+        ok, msg = self._ua_masker.start()
+        if not ok:
+            self.ck_ua_mask.setChecked(False)      # 回滚勾选
+            if "管理员" in msg:
+                self.lb_ua_mask.setText(
+                    "UA 归一需要管理员权限：点下方「以管理员重启」，重启后会自动启用。")
+                self.btn_admin.setVisible(True)
+            else:
+                self.lb_ua_mask.setText(f"UA 归一启动失败：{msg}")
+            return
+
+        self._refresh_ua_mask()
+        self._schedule_save()
+
+    def _on_target_ua_changed(self, text: str) -> None:
+        """
+        改目标 UA。**运行中立即生效**，不需要重启。
+
+        为什么能做到：UaMasker 的工作线程每处理一个包都读 self._target，
+        不是启动时捕获的局部变量。
+        """
+        if self._loading:
+            return
+        ua = text.strip() or ua_mask.DEFAULT_UA
+        self._ua_masker.set_target(ua)
+        self._refresh_ua_mask()
+        self._schedule_save()
+
+    def _refresh_ua_mask(self) -> None:
+        """刷新 UA 归一的状态文字。"""
+        st = self._ua_masker
+        d = ua_mask.describe(st.target_ua)
+
+        if not d["pydivert_ok"]:
+            self.lb_ua_mask.setText(f"不可用：{d['pydivert_reason']}")
+            return
+        if not d["admin"]:
+            self.lb_ua_mask.setText("需要管理员权限（WinDivert 要装驱动）")
+            self.btn_admin.setVisible(True)
+            return
+
+        if st.running:
+            self.lb_ua_mask.setText(
+                f"运行中 · 已改 {st.packets_masked} 包"
+                f"（扫过 {st.packets_seen} 个 HTTP 包）"
+                f"　目标 UA 长度 {d['target_len']} 字节")
+        else:
+            self.lb_ua_mask.setText(
+                "已关闭　·　仅覆盖明文 HTTP（80）；HTTPS 的 UA 改不了")
+
+        if st.last_error:
+            self.lb_ua_mask.setText(self.lb_ua_mask.text() + f"　⚠️ {st.last_error}")
+
     # ---------------------------------------------------------------- 共享助手
     def _on_hotspot_toggled(self, checked: bool) -> None:
         if self._loading:

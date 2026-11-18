@@ -107,6 +107,16 @@ class AppConfig:
     #: 需要管理员权限 + pydivert；失败不影响认证功能。
     hotspot_ttl: bool = False
 
+    # --- HTTP UA 归一（2026-11-18 新增）---
+    #: 把明文 HTTP 请求的 User-Agent 统一成一个值。
+    #: 私接检测不只看 TTL，还看 UA 的多样性 —— 同一出口出现
+    #: iPhone / Android / Windows 多种 UA 就是"多设备"的铁证。
+    #: 只对 80 端口有效（HTTPS 的 UA 在 TLS 加密层里）。
+    ua_mask: bool = False
+    #: 目标 UA。建议保持默认（11 字节）。
+    #: 越短覆盖面越广 —— 新 UA 不能比原 UA 长，短 UA 请求会被跳过。
+    target_ua: str = "Mozilla/5.0"
+
     # --- 状态 ---
     first_run_done: bool = False      # 首次启动引导是否走完
 
@@ -209,6 +219,7 @@ class AppConfig:
                          ("close_to_tray", bool), ("autostart", bool),
                          ("vision_node_enabled", bool),
                          ("hotspot_ttl", bool),
+                         ("ua_mask", bool),
                          ("captcha_manual", bool),
                          ("logout_min_confidence", float),
                          ("first_run_done", bool),
