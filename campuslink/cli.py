@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 
@@ -175,6 +176,66 @@ def cmd_loop(args) -> int:
             return 0
 
 
+def cmd_logout(args) -> int:
+    """
+    免验证码注销（2026-11-18 新增）。
+
+    与 login 的差异：
+      · 不需要账号密码 —— 注销只要验证码
+      · 验证码走 ddddocr（注销页的 /CheckCode 是 4 位字符，不是算式）
+      · 成功后**不自动登录** —— 用户要的是腾出会话名额（比如给手机用）
+
+    退出码：
+      0  注销成功（含「本来就没联网」）
+      2  注销失败
+      1  配置问题
+    """
+    cfg, prof = _load()
+    if not prof.portal_url or prof.portal_url == "auto":
+        print("没有配置门户地址，无法注销。")
+        print(f"  配置文件: {paths.config_file()}")
+        return 1
+
+    def say(msg: str) -> None:
+        print(f"  {msg}")
+
+    def ask(img: bytes, auto: str) -> str | None:
+        """人工兜底：把图存到临时文件并提示用户输入。"""
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".png", prefix="campuslink-logout-")
+        try:
+            os.write(fd, img)
+            os.close(fd)
+            print(f"\n  [人工兜底] 验证码图已保存: {path}")
+            print(f"             自动识别结果: {auto or '（认不出）'}")
+            return input("  请输入验证码（直接回车 = 跳过这张）: ").strip() or None
+        except Exception:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            return None
+        finally:
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
+
+    auth = Authenticator(prof, verbose=args.verbose)
+    res = auth.logout(
+        on_progress=say,
+        ask_captcha=ask,
+        min_confidence=args.min_conf,
+        manual_after=args.manual_after,
+    )
+    print()
+    print(f"  结果: {'成功' if res.ok else '失败'} | {res.message}")
+    if res.raw_message and res.raw_message != res.message:
+        print(f"  门户提示: {res.raw_message}")
+    print(f"  尝试次数: {res.attempts}")
+    return 0 if res.ok else 2
+
+
 def cmd_router_serve(args) -> int:
     """
     启动 Router 控制面（/api/v1 服务端）。
@@ -247,6 +308,16 @@ def main(argv: list[str] | None = None) -> int:
     p_loop = sub.add_parser("loop", help="常驻自动重连")
     p_loop.add_argument("--interval", type=int, default=60, help="检查间隔秒数")
     p_loop.set_defaults(fn=cmd_loop)
+
+    p_logout = sub.add_parser(
+        "logout", help="免验证码注销（腾出会话名额给手机/其它设备）")
+    p_logout.add_argument("--min-conf", type=float, default=0.90,
+                          help="验证码置信度门限，低于此值换图不提交（默认 0.90）")
+    p_logout.add_argument("--manual-after", type=int, default=None,
+                          help="第几次尝试后允许人工输入（默认 max_retry-1）")
+    p_logout.add_argument("-v", "--verbose", action="store_true",
+                          help="打印验证码识别细节")
+    p_logout.set_defaults(fn=cmd_logout)
 
     p_router = sub.add_parser("router-serve", help="启动 Router 控制面（/api/v1）")
     p_router.add_argument("--sim", action="store_true",

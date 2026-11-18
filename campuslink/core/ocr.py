@@ -204,6 +204,59 @@ def confidence(best: str, detail: dict[str, str]) -> float:
     return sum(1 for v in valid if v.lower() == needle) / len(valid)
 
 
+def recognize_with_confidence(
+    img_bytes: bytes,
+    beta: bool = False,
+) -> tuple[str, float, dict]:
+    """
+    单次识别，返回真实置信度（2026-11-18 新增，给免验证码注销用）。
+
+    与 recognize() 的差异：
+
+      1. **不做多策略投票**。注销页的 /CheckCode 每次请求都是新图
+         （实测 30 张 md5 无一重复），拿不准换一张就行，不需要投票。
+      2. **用 ddddocr 的 probability 输出**。它内部对每个字符位置给出
+         概率分布，confidence 是最弱字符的概率 —— 这才是真实置信度，
+         比 recognize()+confidence() 的「策略一致率」准确得多。
+
+    实测（注销验证码 80×24）：
+        probability 模式返回 {'text': 'dl2m', 'confidence': 0.997, ...}
+        conf < 0.90 的样本极少，且基本都是真的认错了
+
+    降级：ddddocr 版本不支持 probability 参数时（TypeError），
+          退回普通模式，confidence 返回 1.0（视为可信，不阻塞流程）。
+
+    返回 (text, confidence, detail)
+        text       : 识别结果；空串表示没认出来
+        confidence : 0.0~1.0；降级时为 1.0
+        detail     : 诊断信息（不含敏感内容）
+    """
+    ocr = get_ocr(beta)
+
+    try:
+        result = ocr.classification(img_bytes, probability=True)
+    except TypeError:
+        # ddddocr < 1.5 没有 probability 参数
+        text = (ocr.classification(img_bytes) or "").strip()
+        return text, 1.0, {"_mode": "legacy", "text": text}
+    except Exception as exc:
+        return "", 0.0, {"_error": f"{type(exc).__name__}: {exc}"}
+
+    if isinstance(result, dict):
+        text = (result.get("text") or "").strip()
+        try:
+            conf = float(result.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        detail = {"_mode": "probability", "text": text,
+                  "confidence": round(conf, 4)}
+        return text, conf, detail
+
+    # 某些版本即使传 probability 也只返回 str
+    text = str(result or "").strip()
+    return text, 1.0 if text else 0.0, {"_mode": "str", "text": text}
+
+
 
 
 # ------------------------------------------------------------------

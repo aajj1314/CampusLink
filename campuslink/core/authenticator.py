@@ -25,7 +25,8 @@ from .exceptions import (AlreadyOnline, AuthRejected, Cancelled, CampusLinkError
                          CaptchaFailed, NetworkUnreachable, PortalChanged)
 from .models import Credentials, LoginResult, NetworkState, PortalProfile
 from .ocr_backend import LocalDdddocrBackend, OcrBackend
-from .portal import PortalClient, friendly_error, make_session
+from .portal import (PortalClient, extract_message, extract_message_from_html,
+                     extract_online_state, friendly_error, make_session)
 
 ProgressFn = Callable[[str], None]
 CancelFn = Callable[[], bool]
@@ -43,6 +44,25 @@ RETRY_DELAY = 1.5
 RESHUFFLE_DELAY = 1.3
 #: 换会话重取的最大次数
 RESHUFFLE_TRIES = 4
+
+#: 注销成功的页面文案候选（2026-11-18 新增）。
+#:
+#: ⚠️ 这组是**兼容方案**，不是实测结论 —— 实测成功文案需要一个真实在线的
+#: 账号跑一次注销才能拿到，当时条件不具备。用户实测后应把真实文案补进来，
+#: 或删掉不相关的项。判据逻辑本身有第二条兜底（在线状态变化），
+#: 所以即使文案全不匹配，只要「已联网」变成「未联网」仍会判成功。
+LOGOFF_SUCCESS_HINTS = (
+    "注销成功",
+    "断开成功",
+    "已注销",
+    "已断开",
+    "断开网络成功",
+)
+
+#: 注销失败的页面文案
+LOGOFF_FAIL_HINTS = (
+    "验证码错误",
+)
 
 
 class Authenticator:
@@ -305,6 +325,245 @@ class Authenticator:
                            friendly_error(last_raw) or "多次尝试后仍未认证成功",
                            NetworkState.NEED_LOGIN,
                            attempts=profile.max_retry, raw_message=last_raw)
+
+    # ============================================================ 注销
+    def logout(
+        self,
+        *,
+        cancel: CancelFn | None = None,
+        on_progress: ProgressFn | None = None,
+        on_captcha: CaptchaFn | None = None,
+        ask_captcha: "AskCaptchaFn | None" = None,
+        min_confidence: float = 0.90,
+        manual_after: int | None = None,
+    ) -> LoginResult:
+        """
+        免验证码注销（2026-11-18 新增）。
+
+        与 login() 的差异：
+
+          · **不需要 Credentials** —— 注销只要验证码，不要账号密码
+          · **验证码每次换图**（实测 /CheckCode 30 张 md5 全不同），
+            所以没有 login() 那套「换 session 重取」的复杂逻辑
+          · **重试次数更多**（logout_max_retry=10）：注销失败成本低
+          · **成功后不自动登录** —— 用户要的是腾出会话名额（比如给手机用）
+
+        参数
+        ----
+        min_confidence : 验证码置信度门限。低于此值**不提交**，直接换图。
+                         实测注销验证码的 confidence 在 0.95~0.99，
+                         0.90 的门限基本只会拦下真正认错的。
+        manual_after   : 第几次尝试后开始允许人工兜底。
+                         默认 None = 用 logout_max_retry-1（即第 9 次）。
+
+        判据（三条 OR，见 LOGOFF_SUCCESS_HINTS 与 _judge_logout）
+        """
+        say = _Say(on_progress)
+        aborted = _Cancel(cancel)
+        profile = self.profile
+
+        if manual_after is None:
+            manual_after = max(1, profile.logout_max_retry - 1)
+
+        # 注销用独立的后端实例：单次识别 + 真实置信度
+        backend = LocalDdddocrBackend(mode="logout")
+
+        client = PortalClient(profile)
+        last_raw = ""
+        last_reason = "未开始"
+        before_state = ""
+
+        for attempt in range(1, profile.logout_max_retry + 1):
+            if aborted:
+                return _cancelled()
+
+            # --- 1) 打开注销页（每次重开：隐藏域都是动态的）---
+            say(f"第 {attempt}/{profile.logout_max_retry} 次尝试：打开注销页…")
+            try:
+                page = client.open_logout_page()
+            except PortalChanged as exc:
+                return LoginResult(False, exc.user_message, NetworkState.UNKNOWN,
+                                   attempts=attempt - 1, detail=exc.detail)
+            except NetworkUnreachable as exc:
+                return LoginResult(False, exc.user_message, NetworkState.OFFLINE,
+                                   attempts=attempt - 1, detail=exc.detail)
+
+            if attempt == 1:
+                before_state = page.online_state
+                if before_state:
+                    say(f"服务端状态：{before_state}"
+                        f"{'（IP ' + page.user_ip + '）' if page.user_ip else ''}")
+                if before_state == "未联网":
+                    # 不是错误，但要提示 —— 用户可能以为注销失败
+                    say("提示：账号当前显示未联网，注销可能无实际效果")
+
+            if aborted:
+                return _cancelled()
+
+            # --- 2) 取验证码 ---
+            try:
+                img = client.fetch_logout_captcha(page)
+            except NetworkUnreachable as exc:
+                say(f"验证码下载失败：{exc.user_message}")
+                img = b""
+
+            if not img:
+                return LoginResult(
+                    False, "注销页没有验证码，页面结构可能已变化",
+                    NetworkState.UNKNOWN, attempts=attempt,
+                    detail="fetch_logout_captcha 返回空")
+
+            # --- 3) 识别（带真实置信度）---
+            ocr_result = backend.recognize(
+                img, length=profile.logout_captcha_length,
+                strategies=("raw",))
+
+            captcha_text = ocr_result.text
+            conf = ocr_result.confidence
+
+            if on_captcha:
+                try:
+                    on_captcha(img, captcha_text)
+                except Exception:
+                    pass
+
+            # --- 3.5) 置信度门限：拿不准就换图，不冒险提交 ---
+            # 注销是幂等操作，但提交错误验证码会让服务端刷新验证码，
+            # 白白多一轮；更糟的是可能触发频率限制。所以低置信度直接换图。
+            if captcha_text and conf < min_confidence:
+                say(f"验证码把握不足（{conf:.0%} < {min_confidence:.0%}），换一张")
+                captcha_text = ""
+
+            if not captcha_text:
+                say("验证码没认出来，换一张重试")
+
+            # --- 3.6) 人工兜底：只在快用完重试时才打扰用户 ---
+            if not captcha_text and ask_captcha is not None and attempt >= manual_after:
+                if aborted:
+                    return _cancelled()
+                try:
+                    manual = ask_captcha(img, captcha_text)
+                except Cancelled:
+                    return _cancelled()
+                except Exception:
+                    manual = None
+                if manual and manual.strip():
+                    captcha_text = manual.strip()
+                    say("已采用人工输入的验证码")
+
+            if not captcha_text:
+                if attempt < profile.logout_max_retry:
+                    time.sleep(RETRY_DELAY)
+                continue
+
+            if self.verbose:
+                say(f"验证码 {captcha_text}（把握 {conf:.0%}），提交注销…")
+            else:
+                say("正在提交注销…")
+
+            # --- 4) 提交 ---
+            payload = client.build_logout_payload(page, captcha_text)
+            try:
+                resp = client.submit_logout(page, payload)
+            except NetworkUnreachable as exc:
+                return LoginResult(False, exc.user_message, NetworkState.OFFLINE,
+                                   attempts=attempt, detail=exc.detail)
+
+            # --- 5) 判定 ---
+            ok, reason, raw = _judge_logout(resp.text, before_state)
+            last_raw = raw
+            last_reason = reason
+
+            if ok:
+                if reason == "already_offline":
+                    msg = "账号本来就是未联网状态（注销无对象，目标状态已达成）"
+                elif reason == "state_changed":
+                    msg = "已注销（已联网 → 未联网）"
+                else:
+                    msg = next((h for h in LOGOFF_SUCCESS_HINTS if h in resp.text),
+                               "已注销")
+                return LoginResult(True, msg, NetworkState.NEED_LOGIN,
+                                   attempts=attempt, raw_message=raw)
+
+            if reason == "captcha_error":
+                say(f"验证码错误（{attempt}/{profile.logout_max_retry}）")
+                if attempt < profile.logout_max_retry:
+                    time.sleep(RETRY_DELAY)
+                continue
+
+            # 其它不确定情况：记录原文继续重试
+            say(f"注销结果不确定（{raw[:40] if raw else '无提示'}），重试")
+            if attempt < profile.logout_max_retry:
+                time.sleep(RETRY_DELAY)
+
+        return LoginResult(
+            False,
+            f"注销失败（{last_reason}）",
+            NetworkState.UNKNOWN,
+            attempts=profile.logout_max_retry,
+            raw_message=last_raw)
+
+
+# ------------------------------------------------------------------ 注销判定
+def _judge_logout(html: str, before_state: str) -> tuple[bool, str, str]:
+    """
+    判定一次注销提交的结果（2026-11-18 新增）。
+
+    返回 (ok, reason, raw_message)
+
+    reason 取值：
+        "captcha_error"  —— 验证码错了，应换图重试（**唯一必须重试的失败**）
+        "success_hint"   —— 命中成功文案
+        "state_changed"  —— 在线状态从「已联网」变成「未联网」
+        "already_offline"—— 提交前就已经未联网（注销无对象，但不算失败）
+        "unknown"        —— 说不好
+
+    判据优先级（按可靠性排）：
+
+      1. **验证码错误** —— 实测最明确的信号：
+         <p class="validation-summary-errors">验证码错误!</p>
+         命中即失败，必须换图重来。
+
+      2. **成功文案** —— 从 LOGOFF_SUCCESS_HINTS 里找。
+         ⚠️ 这组文案**未经实测确认**（需要真实在线账号跑一次注销），
+         属于兼容方案。如果全部不命中，还有第 3、4 条兜底。
+
+      3. **在线状态变化** —— 最可靠的兜底：
+         注销页的「当前在线状态」是服务端权威状态，
+         提交前「已联网」、提交后「未联网」就是注销成功了。
+
+      4. **本来就离线** —— 提交前就是「未联网」：
+         服务端没有会话可断，提交一个格式正确的验证码后
+         页面照旧显示「未联网」，没有任何变化可观察。
+         这种情况**不应判失败**（用户的目标状态已经达成），
+         但也不能说"注销成功"（本来就没登）。
+         实测（2026-11-18）：5 次提交全部没有「验证码错误」，
+         说明服务端接受了请求，只是没东西可断。
+    """
+    raw = extract_message_from_html(html) or ""
+
+    # 1) 验证码错误 —— 最明确的失败，必须换图重试
+    for hint in LOGOFF_FAIL_HINTS:
+        if hint in html or hint in raw:
+            return False, "captcha_error", raw
+
+    # 2) 成功文案
+    for hint in LOGOFF_SUCCESS_HINTS:
+        if hint in html:
+            return True, "success_hint", raw or hint
+
+    after_state = extract_online_state(html)
+
+    # 3) 在线状态变化（最可靠）
+    if before_state == "已联网" and after_state == "未联网":
+        return True, "state_changed", raw or "已联网 → 未联网"
+
+    # 4) 提交前就已经离线 —— 目标状态已达成，但没有"注销"这个动作可做
+    if before_state == "未联网" and after_state == "未联网":
+        return True, "already_offline", raw or "本来就是未联网状态"
+
+    # 5) 说不好
+    return False, "unknown", raw
 
 
 # ------------------------------------------------------------------ 小工具

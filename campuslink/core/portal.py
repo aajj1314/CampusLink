@@ -24,6 +24,7 @@ OpenWrt 上原样可用。
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin
@@ -58,6 +59,49 @@ MESSAGE_CLASSES = (
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
 
+#: 「当前在线状态」字段的三种可能取值（2026-11-18 实测）
+#:
+#: 实测 HTML 形态（注意换行和可选 font 标签）：
+#:   <span id="MainContent_LabelOnline" style="color:OrangeRed;">
+#:       <font color="OrangeRed">未联网</font></span>
+#:   <span id="MainContent_LabelOnline"><font>已联网</font></span>
+#:   <span id="MainContent_LabelOnline" style="x">已联网</span>
+#:
+#: 所以正则要跨行、允许 style、允许 font、允许两者之间有任意空白。
+#: [\s\S]*? 只吃到第一个 > ，避免跨越太多节点。
+ONLINE_STATE_RE = re.compile(
+    r'MainContent_LabelOnline[^>]*>'           # 到 span 开标签结束
+    r'(?:[\s\S]{0,120}?)'                      # 中间可能有空白/font 开标签
+    r'([已未]联网)',                            # 目标文本
+    re.I)
+
+#: 「当前用户IP」字段
+USER_IP_RE = re.compile(
+    r'MainContent_LocalIP[^>]*>\s*([\d.]+)', re.I)
+
+
+def extract_online_state(html: str) -> str:
+    """
+    从注销页抠「当前在线状态」。
+
+    实测 HTML 形态（2026-11-18）：
+        <span id="MainContent_LabelOnline" style="color:OrangeRed;">
+            <font color="OrangeRed">未联网</font></span>
+
+    注意 font 标签是**可选**的 —— 不同状态渲染不同，
+    所以正则里用 (?:<font[^>]*>)? 兼容。
+
+    返回 "已联网" / "未联网" / ""（没找到）
+    """
+    m = ONLINE_STATE_RE.search(html)
+    return m.group(1) if m else ""
+
+
+def extract_user_ip(html: str) -> str:
+    """从注销页抠「当前用户IP」。"""
+    m = USER_IP_RE.search(html)
+    return m.group(1) if m else ""
+
 
 @dataclass
 class LoginPage:
@@ -70,6 +114,26 @@ class LoginPage:
     captcha_url: str = ""
     html: str = ""            # 仅内存保留，用于排查；不写日志
     cookie_names: list[str] = field(default_factory=list)
+
+
+@dataclass
+class LogoutPage:
+    """
+    一次「打开注销页」的产物（2026-11-18 新增）。
+
+    比 LoginPage 多两个字段 —— online_state / user_ip，
+    这两个是**服务端权威状态**，比 generate_204 探针可靠：
+    探针只能间接推断，而这里门户直接告诉你「已联网 / 未联网」。
+    """
+
+    base_url: str
+    action: str
+    method: str
+    fields: dict[str, str] = field(default_factory=dict)
+    captcha_url: str = ""
+    online_state: str = ""    # "已联网" / "未联网" / ""
+    user_ip: str = ""         # 服务端看到的客户端 IP
+    html: str = ""
 
 
 def make_session(profile: PortalProfile) -> requests.Session:
@@ -278,6 +342,160 @@ class PortalClient:
         ok = check_success(resp, self.profile.success_check)
         return ok, (raw or ("认证成功" if ok else "认证失败")), raw
 
+    # ======================================================== 注销（2026-11-18 新增）
+    def open_logout_page(self) -> LogoutPage:
+        """
+        打开注销页。
+
+        与 open_login_page() 的差异：
+
+          1. **不需要「已在线」的特殊处理**。登录页在已在线时可能不给表单，
+             但注销页任何状态都正常返回（实测：未联网时也返回完整表单）。
+          2. **必须解析出「当前在线状态」**。这是本次新增的权威信号，
+             用来判断注销前后状态是否真的变了。
+          3. lrl=1 查询参数必须保留 —— 它是「直接跳转」标记。
+
+        实测 HTML（2026-11-18）：
+            <form method="post" action="./logoff?lrl=1" id="ctl01">
+              __VIEWSTATE / __VIEWSTATEGENERATOR / __VIEWSTATEENCRYPTED / __EVENTVALIDATION
+              ctl00$MainContent$TextBoxCC     (验证码, maxlength=4)
+              ctl00$MainContent$LogoffBtn     (submit, value="注销")
+        """
+        url = self.profile.logout_url
+        if not url:
+            base = self.profile.portal_url
+            # portal_url 可能是 .../login，取其根
+            if base.endswith("/login"):
+                base = base[:-len("/login")]
+            url = urljoin(base + "/", "logoff?lrl=1")
+
+        try:
+            resp = self.session.get(url, timeout=self.profile.timeout)
+        except requests.exceptions.SSLError as exc:
+            raise NetworkUnreachable(
+                str(exc), "证书校验失败，内网门户通常需要关闭 SSL 校验") from exc
+        except requests.exceptions.RequestException as exc:
+            raise NetworkUnreachable(str(exc), "注销页打不开") from exc
+
+        resp.encoding = resp.apparent_encoding or resp.encoding
+        html, base = resp.text, resp.url
+
+        soup = BeautifulSoup(html, "lxml")
+        form = self._pick_logout_form(soup)
+        if form is None:
+            raise PortalChanged(
+                f"注销页里没有解析到表单（长度 {len(html)}）",
+                "注销页面结构已变化，可能需要更新门户配置")
+
+        return LogoutPage(
+            base_url=base,
+            action=urljoin(base, form.get("action") or base),
+            method=(form.get("method") or "POST").upper(),
+            fields=self._parse_fields(form),
+            captcha_url=self._locate_captcha(soup, base),
+            online_state=extract_online_state(html),
+            user_ip=extract_user_ip(html),
+            html=html,
+        )
+
+    @staticmethod
+    def _pick_logout_form(soup: BeautifulSoup):
+        """
+        注销页的表单识别。
+
+        **不能复用 _pick_login_form** —— 那里优先找含 password 框的表单，
+        注销页根本没有密码框，会退化成「取第一个 form」，
+        在多表单页面上可能选错。
+
+        这里的判据：action 含 logoff，或表单里有 name 含 Logoff 的 input。
+        """
+        forms = soup.find_all("form")
+        if not forms:
+            return None
+
+        for f in forms:
+            action = str(f.get("action") or "")
+            if "logoff" in action.lower():
+                return f
+            for tag in f.find_all("input"):
+                name = str(tag.get("name") or "")
+                if "Logoff" in name:
+                    return f
+
+        return forms[0]
+
+    def fetch_logout_captcha(self, page: LogoutPage) -> bytes:
+        """
+        取注销验证码。
+
+        与登录验证码的关键差异（实测）：
+          · 登录走 /ACaptcha.ashx（200×60，算式，同一 session 可能返回同一张）
+          · 注销走 /CheckCode    （80×24，4 位字符，**每次都是新图**）
+
+        实测 30 张 md5 无一重复，所以这里只需要加时间戳破 HTTP 缓存，
+        **不需要**登录页那套「换 session 重取」的逻辑。
+        """
+        url = self.profile.logout_captcha_url
+        if not url or url == "auto":
+            url = page.captcha_url
+        if not url:
+            return b""
+
+        url = urljoin(page.base_url, url)
+        sep = "&" if "?" in url else "?"
+
+        try:
+            r = self.session.get(
+                f"{url}{sep}_t={int(time.time() * 1000)}",
+                timeout=self.profile.timeout,
+                headers={"Referer": page.base_url})
+            r.raise_for_status()
+            return r.content
+        except requests.exceptions.RequestException as exc:
+            raise NetworkUnreachable(str(exc), "注销验证码下载失败") from exc
+
+    def build_logout_payload(self, page: LogoutPage,
+                             captcha_text: str) -> dict[str, str]:
+        """
+        页面字段 + 验证码 + 注销按钮 = 最终提交内容。
+
+        ⚠️ **LogoffBtn 必须带**。ASP.NET WebForms 靠 `<input type=submit>`
+        的 name 判断触发了哪个回发，漏掉整个请求不生效。
+        页面上它带 disabled="disabled" class="aspNetDisabled"，
+        那是前端「验证码为空时禁用」的表现，**服务端不看这个属性**。
+        """
+        payload = dict(page.fields)
+        payload.update(self.profile.extra_fields or {})
+
+        fmap = self.profile.logout_field_map or {}
+        target = fmap.get("captcha")
+        if target:
+            for fname in re.split(r"[|,]", target):
+                fname = fname.strip()
+                if fname:
+                    payload[fname] = captcha_text
+
+        if self.profile.logout_submit_name:
+            payload[self.profile.logout_submit_name] = (
+                self.profile.logout_submit_value or "注销")
+
+        return payload
+
+    def submit_logout(self, page: LogoutPage,
+                      payload: dict[str, str]) -> requests.Response:
+        action = self.profile.logout_url or page.action
+        method = (page.method or "POST").upper()
+        try:
+            if method == "POST":
+                return self.session.post(
+                    action, data=payload, timeout=self.profile.timeout,
+                    headers={"Referer": page.base_url})
+            return self.session.get(
+                action, params=payload, timeout=self.profile.timeout,
+                headers={"Referer": page.base_url})
+        except requests.exceptions.RequestException as exc:
+            raise NetworkUnreachable(str(exc), "提交注销请求失败") from exc
+
 
 # ------------------------------------------------------------------ 判定工具
 def check_success(resp: requests.Response, rule: dict[str, Any]) -> bool:
@@ -327,8 +545,26 @@ def extract_message(resp: requests.Response) -> str:
     全文扫关键词会先命中「上网账号:」这类表单标签，把真正的提示挡在后面，
     这个坑上一版踩过。
     """
+    return extract_message_from_html(resp.text)
+
+
+def extract_message_from_html(html: str) -> str:
+    """
+    与 extract_message 同逻辑，但直接吃 HTML 字符串（2026-11-18 新增）。
+
+    为什么需要拆分：注销判定（Authenticator._judge_logout）拿到的
+    是已经读出来的 HTML 文本，再包一个假的 Response 对象很别扭；
+    而 extract_message 原本只接 Response。这里把核心逻辑抽出来，
+    两个入口共用，行为完全一致。
+
+    ⚠️ **无提示容器时的兜底要克制**（2026-11-18 修）：
+    原实现全文扫关键词，命不中就把前 120 字符当提示返回 ——
+    对注销页那是 `<title>断开网络 - ...`，等于把页面标题当报错，
+    日志里全是噪音，也判不出「没问题」和「有问题」的区别。
+    现在：兜底只返回**紧邻关键词**的片段，一个都没命中就返回空串。
+    """
     try:
-        soup = BeautifulSoup(resp.text, "lxml")
+        soup = BeautifulSoup(html, "lxml")
     except Exception:
         soup = None
 
@@ -340,17 +576,22 @@ def extract_message(resp: requests.Response) -> str:
                 if txt:
                     return txt[:200]
 
-    text = re.sub(r"<script[\s\S]*?</script>", " ", resp.text, flags=re.I)
-    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.I)
-    text = re.sub(r"<[^>]+>", " ", text)
+    # 先剔掉 head/script/style —— 标题和脚本不是「服务端提示」
+    body = html
+    for tag in ("head", "script", "style", "title"):
+        body = re.sub(rf"<{tag}[\s\S]*?</{tag}>", " ", body, flags=re.I)
+
+    text = re.sub(r"<[^>]+>", " ", body)
     text = re.sub(r"\s+", " ", text).strip()
 
-    for kw in ("验证码错误", "密码错误", "联网成功", "认证成功", "失败", "错误",
+    # 只返回紧邻关键词的片段；一个都没命中就返回空串（不再回退到前 120 字符）
+    for kw in ("验证码错误", "密码错误", "联网成功", "认证成功", "注销成功",
+               "断开成功", "已注销", "已断开", "失败", "错误",
                "不存在", "已在线", "欠费", "并发"):
         idx = text.find(kw)
         if idx >= 0:
             return text[max(0, idx - 10): idx + 30].strip()
-    return text[:120]
+    return ""
 
 
 #: 门户返回的常见错误 → 给用户的人话。

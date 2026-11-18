@@ -46,16 +46,20 @@ class LocalDdddocrBackend:
     本地 OCR 后端。
 
     `mode` 决定走哪条链路：
-        "text" —— 字符型门户：ddddocr 多策略识别 + 投票。
-                  ddddocr / opencv 为可选依赖，缺失时返回空结果并带
-                  `_reason`（上层按「没认出来」换图，最终给出明确失败）。
-        "math" —— 算式门户：CRNN 专用模型（`core/crnn_math.py`），
-                  返回的 text 是**计算结果**；模型不可用时返回空串
-                  （上层换图），绝不用低质引擎编造答案。
+        "text"   —— 字符型门户登录页：ddddocr 多策略识别 + 投票。
+                    ddddocr / opencv 为可选依赖，缺失时返回空结果并带
+                    `_reason`（上层按「没认出来」换图，最终给出明确失败）。
+        "math"   —— 算式门户：CRNN 专用模型（`core/crnn_math.py`），
+                    返回的 text 是**计算结果**；模型不可用时返回空串
+                    （上层换图），绝不用低质引擎编造答案。
+        "logout" —— 注销页字符验证码（2026-11-18 新增）：单次识别 +
+                    真实置信度。不走多策略投票，因为注销页的 /CheckCode
+                    每次请求都是新图（实测 30 张 md5 全不同），
+                    拿不准换一张比投票更快更准。
     """
 
     def __init__(self, mode: str = "text"):
-        self._mode = mode if mode in ("text", "math") else "text"
+        self._mode = mode if mode in ("text", "math", "logout") else "text"
 
     def recognize(self, image: bytes, *, length: int,
                   strategies: tuple[str, ...]) -> OcrResult:
@@ -64,6 +68,8 @@ class LocalDdddocrBackend:
 
         if self._mode == "math":
             return self._recognize_math(image, started)
+        if self._mode == "logout":
+            return self._recognize_logout(image, started)
 
         from . import ocr
         try:
@@ -86,6 +92,48 @@ class LocalDdddocrBackend:
             confidence=confidence,
             detail=detail,
             source="local",
+            elapsed_ms=max(0, int((_t.monotonic() - started) * 1000)),
+        )
+
+    def _recognize_logout(self, image: bytes, started: float) -> OcrResult:
+        """
+        注销验证码识别（80×24，4 位字符）。
+
+        与 text 模式的两点差异：
+          1. 单次识别，不做多策略投票 —— 注销页每次换图，重试成本低
+          2. 用 ddddocr 的 probability 输出，拿到**真实置信度**
+             （实测注销验证码的 confidence 普遍在 0.95~0.99）
+
+        置信度低于门限时由上层（Authenticator.logout）判断是否提交，
+        本函数只负责如实返回，不做决策。
+        """
+        import time as _t
+        from . import ocr
+
+        try:
+            text, conf, detail = ocr.recognize_with_confidence(image)
+        except ImportError as exc:
+            return OcrResult(
+                text="",
+                confidence=0.0,
+                detail={"_reason": f"ddddocr 不可用（{exc}）"},
+                source="local-logout",
+                elapsed_ms=max(0, int((_t.monotonic() - started) * 1000)),
+            )
+        except Exception as exc:
+            return OcrResult(
+                text="",
+                confidence=0.0,
+                detail={"_reason": f"识别异常（{type(exc).__name__}: {exc}）"},
+                source="local-logout",
+                elapsed_ms=max(0, int((_t.monotonic() - started) * 1000)),
+            )
+
+        return OcrResult(
+            text=text,
+            confidence=max(0.0, min(1.0, conf)),
+            detail=detail,
+            source="local-logout",
             elapsed_ms=max(0, int((_t.monotonic() - started) * 1000)),
         )
 

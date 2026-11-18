@@ -116,6 +116,31 @@ class PortalProfile:
     captcha_url: str = "auto"                 # auto = 从登录页里现找
     ocr_length: int = 4
     ocr_strategies: tuple[str, ...] = ("raw", "gray")
+
+    # ---------------------------------------------------------------- 注销
+    #: 注销页地址。留空则用 "{门户根}/logoff?lrl=1"
+    #: （本项目实测：lrl=1 是「直接跳转」标记，必须带）
+    logout_url: str = ""
+    #: 注销表单的验证码字段映射。与 field_map 同构，但只含 captcha 一项。
+    #: 实测：ctl00$MainContent$TextBoxCC
+    logout_field_map: dict[str, str] = field(default_factory=lambda: {
+        "captcha": "ctl00$MainContent$TextBoxCC",
+    })
+    #: 注销按钮的 name / value。ASP.NET 回发必须带，否则整个请求不触发。
+    #: 实测：按钮带 class="aspNetDisabled" disabled="disabled"，
+    #: 那是前端禁用态，服务端不看，POST 时照带即可。
+    logout_submit_name: str = "ctl00$MainContent$LogoffBtn"
+    logout_submit_value: str = "注销"
+    #: 注销验证码端点。留空则从注销页 <img src> 自动找。
+    #: 实测：/CheckCode（80×24，4 位字符，每次换图）
+    #: 注意与登录页的 /ACaptcha.ashx（200×60，算式）是两个不同端点。
+    logout_captcha_url: str = "/CheckCode"
+    #: 注销验证码期望长度。**仅用于日志提示，不参与校验** ——
+    #: 实测 30 张里有 1 张是 3 位，强制 4 位会误杀。
+    logout_captcha_length: int = 4
+    #: 注销重试次数。比登录多：注销失败成本低，且要预留手工兜底的空间。
+    logout_max_retry: int = 10
+
     #: 验证码形态。
     #:   "text" —— 传统的字母数字字符（默认，保持既有行为）
     #:   "math" —— 算术表达式，要求填**计算结果**（本门户 2026-10 之后是这种）
