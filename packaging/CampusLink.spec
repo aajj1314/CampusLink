@@ -67,6 +67,9 @@ hiddenimports = [
     "campuslink.core.portal",
     "campuslink.core.authenticator",
     "campuslink.core.netdetect",
+    "campuslink.core.hotspot",       # 共享助手（TTL 修复）
+    "campuslink.core.ua_mask",       # 2026-11-18：HTTP UA 归一（WinDivert）
+    "campuslink.core.proc",          # run_quiet（windowed 子进程不能弹黑框）
     "campuslink.config",
     "campuslink.secrets",
     "campuslink.profiles",
@@ -87,6 +90,10 @@ hiddenimports = [
     "bs4",
     "lxml",
     "lxml.etree",
+    # 2026-11-18：注销验证码走 ddddocr，必须显式列出
+    # （core/ocr.py 里是函数内延迟 import，静态分析看不全）
+    "ddddocr",
+    "cv2",
 ]
 
 # ------------------------------------------------------------------ 排除项
@@ -113,19 +120,22 @@ excludes = [
     "tkinter", "unittest", "pydoc", "doctest", "test",
     "matplotlib", "scipy", "pandas", "IPython", "PIL.ImageQt",
     "setuptools", "pip",
-    # ---- 2.0 剥离的验证码识别依赖（算式门户由专用模型识别）----
-    # core/ocr.py 里还有函数内的延迟 import，静态分析会试图收集，
-    # 这里硬排除；字符型门户用户需自行安装 ddddocr + opencv-python
-    "ddddocr", "cv2", "cv2.*",
+    # ---- 以下 2.0 曾剥离，2026-11-18 起恢复 ----
+    # ddddocr / cv2 现在**必须保留**：
+    #   注销页的验证码(/CheckCode，80×24 的 4 位字符) 走的是 ddddocr，
+    #   不是算式模型。剥离掉的话注销功能一到运行时就会报
+    #   「字符识别引擎不可用」。
+    # 代价是产物大 ~40MB（ddddocr 自带 onnxruntime 模型 + cv2）。
+    # 登录侧的算式验证码仍走 CRNN 专用模型，不受影响。
 ]
 
 # ---- 收集带 data 文件 / 原生库的包 ----
-# 2.0：ddddocr / cv2 已剥离（算式门户由专用模型识别，见 core/crnn_math.py），
-# 产物体积明显下降；两者仍被 core/ocr.py 的字符型链路延迟引用，
-# 用 excludes 硬排除，防止静态分析把它们拽回来。
+# 2026-11-18：ddddocr / cv2 重新纳入收集 —— 注销功能的验证码走它们。
+# ddddocr 自带 onnx 模型（约 20MB），cv2 有原生 DLL，必须 collect_all，
+# 否则编译能过、运行时才报模型或 DLL 找不到。
 binaries = []
 _missing = []
-for pkg in ("onnxruntime", "keyring", "pydivert"):
+for pkg in ("onnxruntime", "keyring", "pydivert", "ddddocr", "cv2"):
     try:
         d, b, h = collect_all(pkg)
         datas += d

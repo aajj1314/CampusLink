@@ -1,4 +1,4 @@
-﻿; ===============================================================
+; ===============================================================
 ;  CampusLink 安装程序脚本（Inno Setup 6）
 ;
 ;  编译（一般走 packaging\build_installer.bat）：
@@ -16,14 +16,14 @@
 
 #define MyAppName "CampusLink"
 #define MyAppNameCN "校园网认证客户端"
-#define MyAppVersion "2.0.1"
+#define MyAppVersion "2.1.0"
 #define MyAppPublisher "CampusLink"
 #define MyAppExeName "CampusLink.exe"
 #define MyAppId "{{8F3A7C21-4B6E-4E2A-9D58-2C1F7A9E5B04}"
 
 ; 上一级目录（本文件在 packaging/ 下）
 #define ProjectRoot SourcePath + ".."
-#define DistDir ProjectRoot + "\dist7\CampusLink"
+#define DistDir ProjectRoot + "\dist10\CampusLink"
 
 [Setup]
 AppId={#MyAppId}

@@ -15,7 +15,7 @@ CampusLink —— 校园网认证客户端。
 这样认证逻辑将来能原样搬到 OpenWrt 上。
 """
 
-__version__ = "2.0.1"
+__version__ = "2.1.0"
 APP_NAME = "CampusLink"
 APP_TITLE = "CampusLink 校园网认证"
 ORG_NAME = "CampusLink"

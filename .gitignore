@@ -61,3 +61,10 @@ dist6/
 build6/
 dist7/
 build7/
+
+# 2026-11-18：统一用通配，省得每次新构建目录都要加一条
+# （HANDOVER 里记的"产物目录删不掉导致静默用旧包"就是这么来的）
+dist*/
+build*/
+# 打包自检的输出文件（exe --selftest 会在安装目录生成）
+selftest.txt
