@@ -45,6 +45,13 @@ class AppConfig:
     #: 所以对这类门户推荐打开。字符型门户保持关闭（自动识别 90%+）。
     captcha_manual: bool = False
 
+    #: 注销验证码的置信度门限（2026-11-18 新增）。
+    #: ddddocr 的 probability 输出低于此值时**不提交**，直接换图。
+    #: 实测注销验证码（80×24 的 4 位字符）的置信度在 0.95~0.99，
+    #: 0.90 的门限基本只会拦下真正认错的，不会误杀。
+    #: 调高到 0.95 更保守（重试次数会多一点），调低到 0.80 更激进（可能提交错答案）。
+    logout_min_confidence: float = 0.90
+
     # --- Router 视觉节点（默认关闭，不影响现有独立模式）---
     vision_node_enabled: bool = False  # 作为视觉节点连接 Router
     router_url: str = ""               # Router 地址，如 http://192.168.1.1:7700
@@ -76,6 +83,7 @@ class AppConfig:
                          ("vision_node_enabled", bool),
                          ("hotspot_ttl", bool),
                          ("captcha_manual", bool),
+                         ("logout_min_confidence", float),
                          ("first_run_done", bool)):
             if key in clean:
                 try:

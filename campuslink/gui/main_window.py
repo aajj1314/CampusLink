@@ -35,7 +35,7 @@ from ..visionnode import NodeClient, NodeError, RouterWatcher, VisionNode
 from . import style
 from .captcha_dialog import DEFAULT_TIMEOUT, CaptchaDialog
 from .tray import TrayIcon
-from .worker import AuthWorker, MonitorWorker, WarmupWorker
+from .worker import AuthWorker, LogoutWorker, MonitorWorker, WarmupWorker
 
 log = get_logger("gui")
 
@@ -78,6 +78,7 @@ class MainWindow(QMainWindow):
 
         self._auth: AuthWorker | None = None
         self._monitor: MonitorWorker | None = None
+        self._logout: LogoutWorker | None = None      # 2026-11-18 新增
         self._warmup: WarmupWorker | None = None
         self._loading = True          # 装载配置期间不要触发保存
         self._quitting = False
@@ -366,6 +367,18 @@ class MainWindow(QMainWindow):
         self.btn_cancel.setCursor(Qt.PointingHandCursor)
         row.addWidget(self.btn_cancel, 1)
 
+        #: 注销按钮（2026-11-18 新增）。
+        #: 用途：腾出会话名额 —— 校园网限制一台设备在线，
+        #: 想在手机上用时，先在电脑上注销。
+        #: 注销后**不自动重连**，这是设计意图，不是 bug。
+        self.btn_logout = QPushButton("注销")
+        self.btn_logout.setObjectName("Ghost")
+        self.btn_logout.setMinimumHeight(46)
+        self.btn_logout.setCursor(Qt.PointingHandCursor)
+        self.btn_logout.setToolTip(
+            "断开当前校园网连接，腾出会话名额（比如给手机用）")
+        row.addWidget(self.btn_logout, 1)
+
         self.btn_check = QPushButton("检测网络")
         self.btn_check.setObjectName("Ghost")
         self.btn_check.setMinimumHeight(46)
@@ -426,6 +439,7 @@ class MainWindow(QMainWindow):
         self.btn_connect.clicked.connect(self.start_connect)
         self.btn_cancel.clicked.connect(self.cancel_connect)
         self.btn_check.clicked.connect(self.check_now)
+        self.btn_logout.clicked.connect(self.start_logout)      # 2026-11-18 新增
         self.btn_logs.clicked.connect(self.open_logs)
         self.btn_about.clicked.connect(self.show_about)
         self.btn_eye.clicked.connect(self._toggle_password)
@@ -945,6 +959,132 @@ class MainWindow(QMainWindow):
             w.setEnabled(not busy)
         if busy:
             self._cancel_pending = False
+
+    # ============================================================ 注销（2026-11-18）
+    def start_logout(self) -> None:
+        """
+        注销当前校园网会话。
+
+        为什么要这个功能：学校限制「一台设备在线」。
+        想在手机上用时，得先在电脑上注销腾出名额。
+
+        **注销成功后不自动重连** —— 这是设计意图：
+        用户要的就是"断开"，自动登回去等于白做。
+        """
+        if self._auth and self._auth.isRunning():
+            self.set_status("正在连接中，请先取消再注销", "warn")
+            return
+        if self._logout and self._logout.isRunning():
+            return
+
+        # 在线状态一般才有意义，但离线下也允许点（幂等，服务端会返回未联网）
+        if not self._confirm_logout():
+            return
+
+        self._set_logout_busy(True)
+        self.set_status("正在注销…", "info")
+        self.pill.set_state(NetworkState.CHECKING)
+
+        self._logout = LogoutWorker(
+            self.authenticator,
+            min_confidence=self.cfg.logout_min_confidence,
+            parent=self,
+        )
+        self._logout.progress.connect(lambda m: self.set_status(m, "info"))
+        self._logout.captcha_seen.connect(self._on_captcha)
+        self._logout.result.connect(self._on_logout_result)
+        self._logout.finished.connect(self._on_logout_thread_done)
+
+        # 人工兜底：注销的验证码很简单（4 位字符），只在快用完重试时才打扰
+        if self.cfg.captcha_manual and not self._managed:
+            self._logout.enable_manual_captcha(wait_s=DEFAULT_TIMEOUT + 10)
+            self._logout.manual_captcha.connect(self._on_manual_logout_captcha)
+
+        self._logout.start()
+
+    def _confirm_logout(self) -> bool:
+        """注销前确认 —— 会断网，别手滑。"""
+        from PySide6.QtWidgets import QMessageBox
+        box = QMessageBox(self)
+        box.setWindowTitle("确认注销")
+        box.setIcon(QMessageBox.Question)
+        box.setText("注销会断开当前校园网连接。")
+        box.setInformativeText(
+            "如果你是想在手机上用校园网，注销后等 1~2 分钟再让手机连，"
+            "服务端需要一点时间释放会话。\n\n继续吗？")
+        yes = box.addButton("注销", QMessageBox.AcceptRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec()
+        return box.clickedButton() is yes
+
+    def _on_manual_logout_captcha(self, img: bytes, auto_text: str) -> None:
+        """注销的人工兜底（与登录同一套跨线程问答机制）。"""
+        if self._logout is None or not self._logout.isRunning():
+            if self._logout is not None:
+                self._logout.submit_answer(None)
+            return
+        dlg = CaptchaDialog(
+            img, auto_text,
+            math_mode=False,          # 注销验证码是 4 位字符，不是算式
+            timeout_s=DEFAULT_TIMEOUT,
+            cancel_fn=lambda: bool(self._logout and self._logout.cancelled),
+            parent=self,
+        )
+        try:
+            answer = dlg.exec_answer()
+        except Exception:
+            log.exception("注销验证码对话框异常")
+            answer = None
+        if self._logout is not None:
+            self._logout.submit_answer(answer)
+
+    def _on_logout_result(self, res: LoginResult) -> None:
+        """注销结果处理 —— 注意：成功不自动重连。"""
+        if res.ok:
+            self.pill.set_state(NetworkState.NEED_LOGIN)
+            self.set_status(res.message, "ok")
+            self.tray.notify("CampusLink", res.message or "已注销")
+            # 主动触发一次状态检测，让 pill 尽快反映"需要认证"
+            if self._monitor:
+                self._monitor.request_check()
+        else:
+            # 注销失败不改状态（可能还连着）
+            self.set_status(res.message, "err")
+            if res.attempts:
+                self.lb_status.setText(f"{res.message}　（共尝试 {res.attempts} 次）")
+
+    def _on_logout_thread_done(self) -> None:
+        self._set_logout_busy(False)
+
+    def _set_logout_busy(self, busy: bool) -> None:
+        self.btn_logout.setVisible(not busy)
+        self.btn_connect.setEnabled(not busy)
+        self.btn_check.setEnabled(not busy)
+        for w in (self.ed_student, self.ed_account, self.ed_password,
+                  self.cb_operator, self.ck_save):
+            w.setEnabled(not busy)
+        if busy:
+            self.btn_cancel.setVisible(True)
+            self.btn_cancel.setText("取消注销")
+            try:
+                self.btn_cancel.clicked.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self.btn_cancel.clicked.connect(self.cancel_logout)
+        else:
+            self.btn_cancel.setVisible(False)
+            self.btn_cancel.setText("取消")
+            try:
+                self.btn_cancel.clicked.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self.btn_cancel.clicked.connect(self.cancel_connect)
+            self.btn_logout.setVisible(True)
+
+    def cancel_logout(self) -> None:
+        if self._logout and self._logout.isRunning():
+            self._logout.cancel()
+            self.set_status("正在取消注销…", "warn")
 
     # ================================================================ 网络
     def check_now(self) -> None:

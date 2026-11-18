@@ -111,6 +111,92 @@ class AuthWorker(QThread):
         self.result.emit(res)
 
 
+class LogoutWorker(QThread):
+    """
+    执行一次免验证码注销（2026-11-18 新增）。
+
+    结构与 AuthWorker 几乎一致，差异：
+
+      · 不需要 Credentials —— 注销只要验证码
+      · 验证码走 ddddocr 的 logout 模式（4 位字符，不是算式）
+      · 有置信度门限：拿不准就换图，不冒险提交
+      · 人工兜底只在快用完重试时才触发（manual_after），
+        不像 AuthWorker 那样每次都问
+      · **成功后不自动登录** —— 用户要的是腾出会话名额
+
+    线程与界面之间仍然只通过 Qt 信号通信，不共享可变状态。
+    """
+
+    progress = Signal(str)
+    result = Signal(object)              # LoginResult
+    captcha_seen = Signal(bytes, str)    # (验证码图片, 识别结果)
+    manual_captcha = Signal(bytes, str)  # 人工输入请求
+
+    MANUAL_WAIT = 100
+
+    def __init__(self, authenticator: Authenticator,
+                 min_confidence: float = 0.90,
+                 manual_after: int | None = None,
+                 parent=None):
+        super().__init__(parent)
+        self._auth = authenticator
+        self._min_conf = min_confidence
+        self._manual_after = manual_after
+        self._stop = threading.Event()
+
+        # 人工输入问答通道（与 AuthWorker 同一套机制）
+        self._ask_enabled = False
+        self._answer_evt = threading.Event()
+        self._answer: "str | None" = None
+        self._manual_wait = self.MANUAL_WAIT
+
+    def cancel(self) -> None:
+        self._stop.set()
+        self._answer_evt.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._stop.is_set()
+
+    def enable_manual_captcha(self, wait_s: int = MANUAL_WAIT) -> None:
+        """打开「人工输入验证码」兜底。必须在 start() 之前调用。"""
+        self._ask_enabled = True
+        self._manual_wait = max(1, int(wait_s))
+
+    def submit_answer(self, text: "str | None") -> None:
+        self._answer = text
+        self._answer_evt.set()
+
+    def _make_ask(self):
+        def _ask(img: bytes, auto_text: str) -> "str | None":
+            self._answer = None
+            self._answer_evt.clear()
+            self.manual_captcha.emit(img, auto_text)
+            if not self._answer_evt.wait(self._manual_wait):
+                log.info("注销：等待人工输入超时（%ss），按跳过处理",
+                         self._manual_wait)
+                return None
+            return self._answer
+        return _ask
+
+    def run(self) -> None:
+        ask = self._make_ask() if self._ask_enabled else None
+        try:
+            res: LoginResult = self._auth.logout(
+                cancel=self._stop.is_set,
+                on_progress=self.progress.emit,
+                on_captcha=lambda img, text: self.captcha_seen.emit(img, text),
+                ask_captcha=ask,
+                min_confidence=self._min_conf,
+                manual_after=self._manual_after,
+            )
+        except Exception as exc:                      # 兜底，绝不让线程崩掉
+            log.exception("注销线程异常")
+            res = LoginResult(False, f"内部错误：{type(exc).__name__}",
+                              NetworkState.UNKNOWN, detail=str(exc)[:200])
+        self.result.emit(res)
+
+
 class MonitorWorker(QThread):
     """
     周期性检测网络，用于「网络状态」显示和「断线自动重连」。
