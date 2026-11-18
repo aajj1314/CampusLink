@@ -16,14 +16,14 @@
 
 #define MyAppName "CampusLink"
 #define MyAppNameCN "校园网认证客户端"
-#define MyAppVersion "2.0.0"
+#define MyAppVersion "2.0.1"
 #define MyAppPublisher "CampusLink"
 #define MyAppExeName "CampusLink.exe"
 #define MyAppId "{{8F3A7C21-4B6E-4E2A-9D58-2C1F7A9E5B04}"
 
 ; 上一级目录（本文件在 packaging/ 下）
 #define ProjectRoot SourcePath + ".."
-#define DistDir ProjectRoot + "\dist6\CampusLink"
+#define DistDir ProjectRoot + "\dist7\CampusLink"
 
 [Setup]
 AppId={#MyAppId}
@@ -58,6 +58,7 @@ MinVersion=10.0
 
 ; ---- 外观：现代向导 ----
 WizardStyle=modern
+
 Compression=lzma2/max
 SolidCompression=yes
 LZMAUseSeparateProcess=yes
@@ -74,6 +75,11 @@ Name: "chinese"; MessagesFile: "ChineseSimplified.isl"
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"
 Name: "startup";     Description: "开机自动启动（登录 Windows 后自动登录校园网）"; GroupDescription: "附加任务:"; Flags: checkedonce
+
+[Messages]
+; 标题里的 [name] 占位符在中文语言包下不替换，会原样显示 "[name] 安装程序"；
+; 直接覆盖语言消息，绕开这个一直存在的小瑕疵
+SetupWindowTitle={#MyAppName} {#MyAppNameCN} 安装程序
 
 [Files]
 ; 整个 onedir 产物都装进去。_internal 目录里有 Qt 运行库和识别模型，一个都不能少。
