@@ -115,8 +115,8 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(APP_TITLE)
         self.setWindowIcon(style.app_icon(128))
-        self.setMinimumSize(520, 640)
-        self.resize(560, 720)
+        self.setMinimumSize(620, 640)
+        self.resize(660, 760)
 
         self._build_ui()
         self._wire()
@@ -216,14 +216,18 @@ class MainWindow(QMainWindow):
         acc_row = QHBoxLayout()
         acc_row.setSpacing(6)
 
+        #: 下拉框给一个合理的最小宽度但允许拉伸 ——
+        #: 固定 180 在窄窗口下会把右侧按钮挤出去（实测过：
+        #: 默认 560 宽时三个按钮被切掉，只剩「新」字）。
         self.cb_account = QComboBox()
-        self.cb_account.setMinimumWidth(180)
+        self.cb_account.setMinimumWidth(140)
+        self.cb_account.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.cb_account.setToolTip("切换账号时会先自动注销当前账号")
         acc_row.addWidget(self.cb_account, 1)
 
         self.btn_account_add = QPushButton("新增")
         self.btn_account_add.setObjectName("Eye")
-        self.btn_account_add.setFixedWidth(52)
+        self.btn_account_add.setFixedWidth(48)
         self.btn_account_add.setCursor(Qt.PointingHandCursor)
         self.btn_account_add.setToolTip("把当前填写的内容存为新账号")
         acc_row.addWidget(self.btn_account_add)
@@ -233,14 +237,14 @@ class MainWindow(QMainWindow):
         #: 等于死代码 —— 下拉框只能显示学工号，多账号时不好区分。
         self.btn_account_rename = QPushButton("改名")
         self.btn_account_rename.setObjectName("Eye")
-        self.btn_account_rename.setFixedWidth(52)
+        self.btn_account_rename.setFixedWidth(48)
         self.btn_account_rename.setCursor(Qt.PointingHandCursor)
         self.btn_account_rename.setToolTip("给当前账号起个备注名（如「我」「室友」）")
         acc_row.addWidget(self.btn_account_rename)
 
         self.btn_account_del = QPushButton("删除")
         self.btn_account_del.setObjectName("Eye")
-        self.btn_account_del.setFixedWidth(52)
+        self.btn_account_del.setFixedWidth(48)
         self.btn_account_del.setCursor(Qt.PointingHandCursor)
         self.btn_account_del.setToolTip("删除当前选中的账号")
         acc_row.addWidget(self.btn_account_del)
