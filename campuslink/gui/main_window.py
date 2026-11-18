@@ -721,8 +721,18 @@ class MainWindow(QMainWindow):
         """
         刷新账号下拉框。
 
-        显示条件：有多于一套账号，或者用显示更明确的标签时。
-        只有一套时隐藏整行 —— 单账号用户不该看到多余的 UI。
+        ⚠️ **这一行必须始终可见**（2026-11-18 修）。
+
+        原来的逻辑是「少于 2 套账号时隐藏整行」，想的是单账号用户
+        不该看到多余 UI。但那是个死循环：
+
+            只有 1 套账号 → 整行隐藏 → 「新增」按钮也没了
+            → 用户没办法加第二个账号
+
+        实测被用户当场指出「找不到多账号的入口」。
+
+        现在：单账号时也让「新增」可见 —— 那正是加账号的唯一入口。
+        下拉框在只有 1 项时没什么用，但留着无害（也不会误导）。
         """
         c = self.cfg
         self._loading = True
@@ -734,10 +744,17 @@ class MainWindow(QMainWindow):
             if 0 <= c.current_account_index < len(labels):
                 self.cb_account.setCurrentIndex(c.current_account_index)
 
-            # 少于 2 套时把整行藏起来（含标签）
-            show = len(labels) >= 2
-            self._account_row.setVisible(show)
-            self._account_row_label.setVisible(show)
+            # 始终可见。不下拉框的可用性另说 ——
+            # 「新增」是加账号的唯一入口，藏了就没法用。
+            self._account_row.setVisible(True)
+            self._account_row_label.setVisible(True)
+
+            # 只有 1 套时禁用「改名」「删除」——
+            # 删掉最后一套会让界面回到"没有账号"的空状态，容易误操作。
+            # 「新增」永远可用。
+            has_one = len(labels) >= 1
+            self.btn_account_rename.setEnabled(has_one)
+            self.btn_account_del.setEnabled(has_one)
         finally:
             self._loading = False
 
@@ -817,9 +834,21 @@ class MainWindow(QMainWindow):
         """
         「新增」按钮：把表单当前内容存成一套新账号。
 
-        交互设计：不弹输入框问备注名，直接存 + 让用户自己改。
-        理由：多一步输入就多一次打断；备注名对多数人没用（看学号就够）。
-        需要区分时，双击下拉框重命名（暂未实现，可后续加）。
+        ## 关于备注名（2026-11-18 修）
+
+        原来这里创建 Account 时**不传 label**，结果每次点「新增」
+        都会把名字丢掉 —— 实测发现用户配好的「我的号」变成了空，
+        下拉框退回显示裸学工号。
+
+        现在的顺序：
+          1. 学工号/账号跟**当前账号**完全一样 → 什么都不做
+             （避免用户重复点「新增」造出重复项）
+          2. 当前账号的 label 空着 且 表单内容只是改了当前账号
+             → 视为「编辑当前账号」，保留原 label
+          3. 其它情况 → 真的是新账号，label 留空让用户点「改名」
+
+        怎么区分「编辑」和「新增」：看用户是不是真的想加一套。
+        这里用最朴素的判据 —— 学工号和账号都跟当前账号不同才算新账号。
         """
         c = self.cfg
         student = self.ed_student.text().strip()
@@ -828,7 +857,30 @@ class MainWindow(QMainWindow):
             self.set_status("请先填写学(工)号或上网账号", "warn")
             return
 
+        # --- 情况 1：跟当前账号一模一样，什么都不用做 ---
+        cur_idx = c.current_account_index
+        if 0 <= cur_idx < len(c.accounts):
+            cur = c.accounts[cur_idx]
+            cur = cur if isinstance(cur, Account) else Account.from_dict(cur)
+            if (cur.student_id == student
+                    and cur.effective_account() == (account or student)
+                    and cur.account == account):
+                self.set_status(
+                    f"「{cur.display_name()}」已经是当前账号，没有变化", "info")
+                return
+
+        # --- 情况 2/3：判断要不要继承 label ---
+        # 只有当"当前账号的学工号和表单不同"时才是真正的第二套账号。
+        # 相同时（用户只是改了上网账号）视为编辑，继承原 label。
+        inherit_label = ""
+        if 0 <= cur_idx < len(c.accounts):
+            cur = c.accounts[cur_idx]
+            cur = cur if isinstance(cur, Account) else Account.from_dict(cur)
+            if cur.student_id == student:
+                inherit_label = cur.label
+
         acc = Account(
+            label=inherit_label,
             student_id=student,
             account=account,
             operator=self.cb_operator.currentText(),
