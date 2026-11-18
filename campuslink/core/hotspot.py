@@ -26,7 +26,6 @@ Windows 没有 iptables，用户在态改 IP 头只能靠 WinDivert（`pydivert`
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -196,9 +195,11 @@ class TtlFixer:
 def local_ipv4_all() -> list[str]:
     """本机全部 IPv4（用 ipconfig，只解析 ASCII，避开中文编码）。"""
     import re as _re
+    from .proc import run_quiet
+
     ips: list[str] = []
     try:
-        out = subprocess.run(["ipconfig"], capture_output=True, timeout=10).stdout
+        out = run_quiet(["ipconfig"], timeout=10)
         for line in out.decode("ascii", "replace").splitlines():
             if "IPv4" not in line:
                 continue

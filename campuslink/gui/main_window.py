@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -66,6 +67,8 @@ class MainWindow(QMainWindow):
     #: visionnode 线程回调 → 主线程（跨线程安全）
     _routerReachable = Signal(bool)
     _routerEvent = Signal(str, object)
+    #: 共享状态后台采集完成 → 主线程更新 UI（ipconfig 不能跑在 UI 线程）
+    _hotspotStatusReady = Signal(object)
 
     def __init__(self, start_minimized: bool = False):
         super().__init__()
@@ -89,6 +92,7 @@ class MainWindow(QMainWindow):
 
         # ---- 校园网共享（TTL 修复）----
         self._fixer = hotspot.TtlFixer()
+        self._hotspot_busy = False
 
         self.setWindowTitle(APP_TITLE)
         self.setWindowIcon(style.app_icon(128))
@@ -448,7 +452,8 @@ class MainWindow(QMainWindow):
         self.btn_admin.clicked.connect(self._on_admin_restart)
         self.btn_hotspot_settings.clicked.connect(hotspot.open_hotspot_settings)
 
-        # 共享状态每 3 秒刷新（热点是否开、改包计数）
+        # 共享状态每 3 秒刷新（后台线程采集，避免 ipconfig 卡住 UI）
+        self._hotspotStatusReady.connect(self._apply_hotspot_status)
         self._hotspot_timer = QTimer(self)
         self._hotspot_timer.setInterval(3000)
         self._hotspot_timer.timeout.connect(self._refresh_hotspot)
@@ -636,14 +641,31 @@ class MainWindow(QMainWindow):
             self.lb_hotspot.setText("UAC 被取消，共享助手未启用。")
 
     def _refresh_hotspot(self) -> None:
-        st = hotspot.collect_status(self._fixer)
+        """触发一次后台采集（3 秒定时器调用；绝不在 UI 线程跑 ipconfig）。"""
+        if self._hotspot_busy:
+            return
+        self._hotspot_busy = True
+        fixer = self._fixer
+
+        def _collect():
+            try:
+                st = hotspot.collect_status(fixer)
+            except Exception:
+                st = None
+            self._hotspot_busy = False
+            if st is not None:
+                self._hotspotStatusReady.emit(st)
+
+        threading.Thread(target=_collect, name="hotspot-status", daemon=True).start()
+
+    def _apply_hotspot_status(self, st) -> None:
+        """后台采集结果 → UI（只在主线程执行）。"""
         self.lb_hotspot.setText(
             f"{st.ready_hint}"
             + (f"　｜　回程改写 {st.packets_in} 包 · 出站 {st.packets_out} 包"
                if st.ttl_running else "")
             + (f"\n最近错误：{st.last_error}" if st.last_error else ""))
         self.btn_admin.setVisible(not st.admin and st.pydivert_ok)
-        # 无 pydivert 时禁用开关，避免用户反复点
         self.ck_hotspot.setEnabled(st.pydivert_ok)
 
     def _on_vision_toggled(self, checked: bool) -> None:

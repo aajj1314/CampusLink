@@ -85,9 +85,10 @@ def local_ipv4_all() -> list[str]:
     """
     ips: list[str] = []
     try:
+        from .proc import run_quiet
+
         if sys.platform.startswith("win"):
-            out = subprocess.run(["ipconfig"], capture_output=True, timeout=10).stdout
-            text = out.decode("ascii", "replace")
+            text = run_quiet(["ipconfig"], timeout=10).decode("ascii", "replace")
             for line in text.splitlines():
                 if "IPv4" not in line:
                     continue
@@ -119,8 +120,9 @@ def default_gateways(valid_ifaces: list[str] | None = None) -> list[tuple[str, s
     found: list[tuple[str, str]] = []
     try:
         if sys.platform.startswith("win"):
-            out = subprocess.run(["route", "print", "-4", "0.0.0.0"],
-                                 capture_output=True, timeout=10).stdout
+            from .proc import run_quiet
+
+            out = run_quiet(["route", "print", "-4", "0.0.0.0"], timeout=10)
             for line in out.decode("ascii", "replace").splitlines():
                 parts = line.split()
                 if len(parts) >= 5 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":
