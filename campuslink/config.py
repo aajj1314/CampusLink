@@ -20,6 +20,43 @@ from . import paths, secrets
 
 
 @dataclass
+class Account:
+    """
+    一套账号信息（非敏感部分）。密码走 secrets 模块，不进这里。
+
+    多账号支持（2026-11-18 新增）：一台电脑上可能有多个人共用，
+    或者一个人有多个上网账号。每套账号单独存，靠 label 区分。
+
+    密码的存储键是 secrets.entry_name(portal_name, account)，
+    所以不同账号天然不冲突 —— 这一点在加多账号之前就已经成立。
+    """
+
+    label: str = ""           # 显示名，如「我」「室友」「备用」
+    student_id: str = ""      # 学(工)号
+    account: str = ""         # 上网账号（留空则用学工号）
+    operator: str = "自动选择"
+
+    def effective_account(self) -> str:
+        """上网账号留空时回退到学工号 —— 门户里两者常常是同一个。"""
+        return (self.account or self.student_id or "").strip()
+
+    def display_name(self) -> str:
+        """界面下拉框里显示的文字。优先 label，其次账号，最后「未命名」。"""
+        if self.label.strip():
+            return self.label.strip()
+        acc = self.effective_account()
+        return acc if acc else "（未命名）"
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Account":
+        known = set(cls.__dataclass_fields__)
+        return cls(**{k: v for k, v in (d or {}).items() if k in known})
+
+
+@dataclass
 class AppConfig:
     """全部用户设置。刻意没有任何密码字段。"""
 
@@ -27,6 +64,15 @@ class AppConfig:
     student_id: str = ""              # 学(工)号
     account: str = ""                 # 上网账号（留空则用学工号）
     operator: str = "自动选择"
+
+    # --- 多账号（2026-11-18 新增）---
+    #: 账号列表。上表三个字段是「当前账号」的镜像，
+    #: 保留是为了兼容旧配置文件 —— 老版本只有这三个字段，
+    #: 加载时自动迁移成 accounts 里的一条。
+    accounts: list = field(default_factory=list)
+    #: 当前选中的账号在 accounts 里的索引。-1 表示「用顶层的三个字段」，
+    #: 这是旧配置和老版本行为的兼容路径。
+    current_account_index: int = -1
 
     # --- 门户 ---
     profile_name: str = ""            # 选中的门户档案名
@@ -69,8 +115,89 @@ class AppConfig:
     def effective_account(self) -> str:
         return (self.account or self.student_id).strip()
 
+    # -------------------------------------------------- 多账号（2026-11-18）
+    def current_account(self) -> Account:
+        """
+        取当前账号。
+
+        兼容路径：`current_account_index < 0` 时，用顶层三个字段
+        临时拼一个 Account 返回 —— 这是旧配置（只有 student_id/account/
+        operator）和老版本行为。这样调用方永远拿到 Account，
+        不用到处判断"有没有多账号"。
+        """
+        if 0 <= self.current_account_index < len(self.accounts):
+            a = self.accounts[self.current_account_index]
+            return a if isinstance(a, Account) else Account.from_dict(a)
+        return Account(
+            student_id=self.student_id,
+            account=self.account,
+            operator=self.operator,
+        )
+
+    def set_current_account(self, acc: Account) -> None:
+        """
+        把 acc 写回「当前账号」，同时镜像到顶层三个字段。
+
+        为什么两边都写：顶层字段是文件格式的一部分（向后兼容），
+        而且 CLI 和旧代码都直接读它们。镜像一次比到处改调用方便宜。
+        """
+        self.student_id = acc.student_id
+        self.account = acc.account
+        self.operator = acc.operator
+        # 如果这套账号已经在列表里，同步更新；否则不改索引
+        for i, a in enumerate(self.accounts):
+            existing = a if isinstance(a, Account) else Account.from_dict(a)
+            if (existing.student_id == acc.student_id
+                    and existing.effective_account() == acc.effective_account()):
+                self.accounts[i] = acc
+                self.current_account_index = i
+                return
+
+    def add_account(self, acc: Account) -> int:
+        """
+        追加一套账号，返回它的索引。
+
+        同一学工号 + 同账号的已存在时，更新它而不是重复添加 ——
+        用户改了个备注名再点"添加"，不该出现两条一样的。
+        """
+        for i, a in enumerate(self.accounts):
+            existing = a if isinstance(a, Account) else Account.from_dict(a)
+            if (existing.student_id == acc.student_id
+                    and existing.effective_account() == acc.effective_account()):
+                self.accounts[i] = acc
+                return i
+        self.accounts.append(acc)
+        return len(self.accounts) - 1
+
+    def remove_account(self, index: int) -> bool:
+        """
+        删除指定账号。返回是否删了。
+
+        删的是当前账号时，索引归到 -1（回到顶层字段路径），
+        避免索引越界或指向错误项。
+        """
+        if not (0 <= index < len(self.accounts)):
+            return False
+        self.accounts.pop(index)
+        if self.current_account_index == index:
+            self.current_account_index = -1
+            self.student_id = ""
+            self.account = ""
+            self.operator = "自动选择"
+        elif self.current_account_index > index:
+            # 删的是前面的，索引要跟着前移
+            self.current_account_index -= 1
+        return True
+
+    def account_labels(self) -> list[str]:
+        """给下拉框用的显示名列表。"""
+        return [(a if isinstance(a, Account) else Account.from_dict(a))
+                .display_name() for a in self.accounts]
+
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # accounts 里的 Account 已经被 asdict 递归处理成 dict 了
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "AppConfig":
@@ -84,7 +211,8 @@ class AppConfig:
                          ("hotspot_ttl", bool),
                          ("captcha_manual", bool),
                          ("logout_min_confidence", float),
-                         ("first_run_done", bool)):
+                         ("first_run_done", bool),
+                         ("current_account_index", int)):
             if key in clean:
                 try:
                     if typ is bool:
@@ -97,6 +225,31 @@ class AppConfig:
                     clean.pop(key, None)
         if not isinstance(clean.get("profile_override"), dict):
             clean["profile_override"] = {}
+
+        # accounts 反序列化：JSON 里是 dict 列表，内存里要 Account 对象
+        raw_accounts = clean.get("accounts")
+        if isinstance(raw_accounts, list):
+            clean["accounts"] = [
+                Account.from_dict(x) if isinstance(x, dict) else x
+                for x in raw_accounts
+            ]
+        else:
+            clean["accounts"] = []
+
+        # 旧配置迁移：有账号但 accounts 为空 → 自动建一条
+        if not clean["accounts"] and (clean.get("student_id") or clean.get("account")):
+            clean["accounts"] = [Account(
+                student_id=clean.get("student_id", ""),
+                account=clean.get("account", ""),
+                operator=clean.get("operator", "自动选择"),
+            )]
+            clean["current_account_index"] = 0
+
+        # 索引越界保护（手改 JSON 很容易写错）
+        idx = clean.get("current_account_index", -1)
+        if idx >= len(clean["accounts"]) or idx < -1:
+            clean["current_account_index"] = -1
+
         return cls(**clean)
 
     # ------------------------------------------------------------------

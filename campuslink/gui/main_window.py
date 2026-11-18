@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame,
                                QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from .. import APP_TITLE, __version__, autostart, paths, profiles
-from ..config import AppConfig
+from ..config import Account, AppConfig
 from ..core import hotspot
 from ..core.authenticator import Authenticator
 from ..core.models import Credentials, LoginResult, NetworkState, Operator
@@ -79,6 +79,11 @@ class MainWindow(QMainWindow):
         self._auth: AuthWorker | None = None
         self._monitor: MonitorWorker | None = None
         self._logout: LogoutWorker | None = None      # 2026-11-18 新增
+        #: 账号切换的目标索引；注销成功后才真正切过去（2026-11-18）
+        self._pending_account_switch: int | None = None
+        #: 最近一次已知的网络状态。StatusPill 只存文字，不存枚举，
+        #: 而账号切换要判断"要不要先注销"，所以这里单独记一份。
+        self._current_state: NetworkState = NetworkState.UNKNOWN
         self._warmup: WarmupWorker | None = None
         self._loading = True          # 装载配置期间不要触发保存
         self._quitting = False
@@ -188,45 +193,79 @@ class MainWindow(QMainWindow):
         title.setObjectName("SectionTitle")
         grid.addWidget(title, 0, 0, 1, 3)
 
+        # ---- 账号选择（2026-11-18 新增：多账号支持）----
+        # 这一行只在有多于一套账号时显示（见 _refresh_account_combo）。
+        # 为什么做成下拉框而不是"新建/删除"按钮：宿舍/家庭场景下
+        # 通常就 2~3 套账号，下拉切换比管理界面直观。
+        self._account_row_label = self._label("当前账号")
+        grid.addWidget(self._account_row_label, 1, 0)
+
+        acc_row = QHBoxLayout()
+        acc_row.setSpacing(6)
+
+        self.cb_account = QComboBox()
+        self.cb_account.setMinimumWidth(180)
+        self.cb_account.setToolTip("切换账号时会先自动注销当前账号")
+        acc_row.addWidget(self.cb_account, 1)
+
+        self.btn_account_add = QPushButton("新增")
+        self.btn_account_add.setObjectName("Eye")
+        self.btn_account_add.setFixedWidth(52)
+        self.btn_account_add.setCursor(Qt.PointingHandCursor)
+        self.btn_account_add.setToolTip("把当前填写的内容存为新账号")
+        acc_row.addWidget(self.btn_account_add)
+
+        self.btn_account_del = QPushButton("删除")
+        self.btn_account_del.setObjectName("Eye")
+        self.btn_account_del.setFixedWidth(52)
+        self.btn_account_del.setCursor(Qt.PointingHandCursor)
+        self.btn_account_del.setToolTip("删除当前选中的账号")
+        acc_row.addWidget(self.btn_account_del)
+
+        self._account_row = QWidget()
+        self._account_row.setLayout(acc_row)
+        acc_row.setContentsMargins(0, 0, 0, 0)
+        grid.addWidget(self._account_row, 1, 1, 1, 2)
+
         # 学工号
-        grid.addWidget(self._label("学(工)号"), 1, 0)
+        grid.addWidget(self._label("学(工)号"), 2, 0)
         self.ed_student = QLineEdit()
         self.ed_student.setPlaceholderText("请输入学号或工号")
         self.ed_student.setClearButtonEnabled(True)
-        grid.addWidget(self.ed_student, 1, 1, 1, 2)
+        grid.addWidget(self.ed_student, 2, 1, 1, 2)
 
         # 上网账号
-        grid.addWidget(self._label("上网账号"), 2, 0)
+        grid.addWidget(self._label("上网账号"), 3, 0)
         self.ed_account = QLineEdit()
         self.ed_account.setPlaceholderText("留空则与学(工)号相同")
         self.ed_account.setClearButtonEnabled(True)
-        grid.addWidget(self.ed_account, 2, 1, 1, 2)
+        grid.addWidget(self.ed_account, 3, 1, 1, 2)
 
         # 密码 + 眼睛
-        grid.addWidget(self._label("密码"), 3, 0)
+        grid.addWidget(self._label("密码"), 4, 0)
         self.ed_password = QLineEdit()
         self.ed_password.setEchoMode(QLineEdit.Password)
         self.ed_password.setPlaceholderText("请输入上网密码")
-        grid.addWidget(self.ed_password, 3, 1)
+        grid.addWidget(self.ed_password, 4, 1)
 
         self.btn_eye = QPushButton("显示")
         self.btn_eye.setObjectName("Eye")
         self.btn_eye.setFixedWidth(52)
         self.btn_eye.setCursor(Qt.PointingHandCursor)
         self.btn_eye.setToolTip("按住或点击可查看密码")
-        grid.addWidget(self.btn_eye, 3, 2)
+        grid.addWidget(self.btn_eye, 4, 2)
 
         # 运营商
-        grid.addWidget(self._label("运营商"), 4, 0)
+        grid.addWidget(self._label("运营商"), 5, 0)
         self.cb_operator = QComboBox()
         for op in Operator:
             self.cb_operator.addItem(op.value)
-        grid.addWidget(self.cb_operator, 4, 1, 1, 2)
+        grid.addWidget(self.cb_operator, 5, 1, 1, 2)
 
         hint = QLabel("账号由运营商提供；实名登记、改密码请带证件到信息中心办理")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
-        grid.addWidget(hint, 5, 0, 1, 3)
+        grid.addWidget(hint, 6, 0, 1, 3)
         return card
 
     @staticmethod
@@ -440,6 +479,10 @@ class MainWindow(QMainWindow):
         self.btn_cancel.clicked.connect(self.cancel_connect)
         self.btn_check.clicked.connect(self.check_now)
         self.btn_logout.clicked.connect(self.start_logout)      # 2026-11-18 新增
+        # 多账号（2026-11-18）
+        self.cb_account.currentIndexChanged.connect(self._on_account_changed)
+        self.btn_account_add.clicked.connect(self._on_account_add)
+        self.btn_account_del.clicked.connect(self._on_account_del)
         self.btn_logs.clicked.connect(self.open_logs)
         self.btn_about.clicked.connect(self.show_about)
         self.btn_eye.clicked.connect(self._toggle_password)
@@ -517,6 +560,9 @@ class MainWindow(QMainWindow):
         if c.hotspot_ttl:
             QTimer.singleShot(300, self._on_hotspot_toggled_restore)
 
+        # 多账号下拉框（2026-11-18）：旧配置在 from_dict 里已迁移成一条
+        self._refresh_account_combo()
+
         # 开机启动以注册表实际状态为准，不信配置文件里的值
         if autostart.supported():
             real = autostart.is_enabled()
@@ -548,7 +594,199 @@ class MainWindow(QMainWindow):
         c.router_url = self.ed_router.text().strip()
         c.hotspot_ttl = self.ck_hotspot.isChecked()
         c.profile_name = self.profile.name
+
+        # 多账号：把当前编辑的内容同步进选中的那条（2026-11-18）
+        idx = c.current_account_index
+        if 0 <= idx < len(c.accounts):
+            old = c.accounts[idx]
+            old = old if isinstance(old, Account) else Account.from_dict(old)
+            c.accounts[idx] = Account(
+                label=old.label,
+                student_id=c.student_id,
+                account=c.account,
+                operator=c.operator,
+            )
+
         c.save()
+
+    # ================================================== 多账号（2026-11-18）
+    def _refresh_account_combo(self) -> None:
+        """
+        刷新账号下拉框。
+
+        显示条件：有多于一套账号，或者用显示更明确的标签时。
+        只有一套时隐藏整行 —— 单账号用户不该看到多余的 UI。
+        """
+        c = self.cfg
+        self._loading = True
+        try:
+            self.cb_account.clear()
+            labels = c.account_labels()
+            for lb in labels:
+                self.cb_account.addItem(lb)
+            if 0 <= c.current_account_index < len(labels):
+                self.cb_account.setCurrentIndex(c.current_account_index)
+
+            # 少于 2 套时把整行藏起来（含标签）
+            show = len(labels) >= 2
+            self._account_row.setVisible(show)
+            self._account_row_label.setVisible(show)
+        finally:
+            self._loading = False
+
+    def _load_account_into_form(self, index: int) -> None:
+        """把第 index 套账号填进表单（不发网络请求）。"""
+        c = self.cfg
+        acc = (c.accounts[index] if isinstance(c.accounts[index], Account)
+               else Account.from_dict(c.accounts[index]))
+        self._loading = True
+        try:
+            self.ed_student.setText(acc.student_id)
+            self.ed_account.setText(acc.account)
+            self.cb_operator.setCurrentText(acc.operator or "自动选择")
+            # 密码从凭据管理器取；取不到就留空让用户填
+            pwd = secrets.load(self.profile.name, acc.effective_account())
+            self.ed_password.setText(pwd or "")
+            if pwd:
+                register_secret(pwd)
+        finally:
+            self._loading = False
+        c.current_account_index = index
+        c.set_current_account(acc)
+        c.save()
+
+    def _on_account_changed(self, index: int) -> None:
+        """
+        切换账号。
+
+        关键点：**切换前先注销旧账号**。
+        学校的限制是一台设备在线，不注销就登录新账号会撞「并发超限」。
+        所以这里先走注销流程，注销成功后才真正切过去。
+        """
+        if self._loading:
+            return
+        c = self.cfg
+        if index < 0 or index >= len(c.accounts):
+            return
+        if index == c.current_account_index:
+            return
+
+        old_acc = c.current_account()
+        new_acc = (c.accounts[index] if isinstance(c.accounts[index], Account)
+                   else Account.from_dict(c.accounts[index]))
+
+        # 记住目标，注销成功后切；注销失败就回退下拉框
+        self._pending_account_switch = index
+
+        if self._logout and self._logout.isRunning():
+            self.set_status("注销进行中，请稍后再切换账号", "warn")
+            self._revert_account_combo()
+            return
+
+        # 已经在线才需要注销；不在线直接切
+        cur_state = getattr(self, "_current_state", NetworkState.UNKNOWN)
+        if cur_state in (NetworkState.ONLINE, NetworkState.UNKNOWN):
+            self.set_status(
+                f"切换账号前先注销 {old_acc.display_name()}…", "info")
+            self.start_logout(skip_confirm=True)
+            return
+
+        # 不在线（需要认证 / 未连接），直接切
+        self._pending_account_switch = None
+        self._load_account_into_form(index)
+        self.set_status(f"已切换到账号：{new_acc.display_name()}", "info")
+
+    def _revert_account_combo(self) -> None:
+        """把下拉框退回到当前生效的账号（切换被取消时用）。"""
+        c = self.cfg
+        self._loading = True
+        try:
+            if 0 <= c.current_account_index < self.cb_account.count():
+                self.cb_account.setCurrentIndex(c.current_account_index)
+        finally:
+            self._loading = False
+
+    def _on_account_add(self) -> None:
+        """
+        「新增」按钮：把表单当前内容存成一套新账号。
+
+        交互设计：不弹输入框问备注名，直接存 + 让用户自己改。
+        理由：多一步输入就多一次打断；备注名对多数人没用（看学号就够）。
+        需要区分时，双击下拉框重命名（暂未实现，可后续加）。
+        """
+        c = self.cfg
+        student = self.ed_student.text().strip()
+        account = self.ed_account.text().strip()
+        if not (student or account):
+            self.set_status("请先填写学(工)号或上网账号", "warn")
+            return
+
+        acc = Account(
+            student_id=student,
+            account=account,
+            operator=self.cb_operator.currentText(),
+        )
+        idx = c.add_account(acc)
+        c.current_account_index = idx
+        c.set_current_account(acc)
+
+        # 密码也一起存（如果填了且勾了保存）
+        pwd = self.ed_password.text()
+        if pwd and self.ck_save.isChecked():
+            secrets.save(self.profile.name, acc.effective_account(), pwd)
+
+        c.save()
+        self._refresh_account_combo()
+        self.set_status(
+            f"已保存账号 {acc.display_name()}（共 {len(c.accounts)} 套）", "ok")
+
+    def _on_account_del(self) -> None:
+        """「删除」按钮：删掉下拉框选中的那套账号。"""
+        c = self.cfg
+        idx = self.cb_account.currentIndex()
+        if not (0 <= idx < len(c.accounts)):
+            self.set_status("没有可删除的账号", "warn")
+            return
+
+        acc = c.accounts[idx]
+        acc = acc if isinstance(acc, Account) else Account.from_dict(acc)
+
+        box = QMessageBox(self)
+        box.setWindowTitle("删除账号")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(f"确定删除账号「{acc.display_name()}」？")
+        box.setInformativeText(
+            "该账号的密码也会从系统凭据管理器里删除。\n"
+            "这不会影响你在学校门户上的账号本身。")
+        yes = box.addButton("删除", QMessageBox.DestructiveRole)
+        box.addButton("取消", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+
+        # 先删密码，再删账号条目
+        try:
+            secrets.delete(self.profile.name, acc.effective_account())
+        except Exception:
+            log.exception("删除凭据失败")
+
+        c.remove_account(idx)
+        c.save()
+
+        # 删完可能只剩一套/零套，刷新界面
+        self._refresh_account_combo()
+        if c.accounts:
+            ni = min(idx, len(c.accounts) - 1)
+            self._load_account_into_form(max(0, ni))
+        else:
+            self._loading = True
+            try:
+                self.ed_student.clear()
+                self.ed_account.clear()
+                self.ed_password.clear()
+            finally:
+                self._loading = False
+        self.set_status(f"已删除账号 {acc.display_name()}", "info")
 
     def _on_save_toggled(self, checked: bool) -> None:
         if self._loading:
@@ -961,7 +1199,7 @@ class MainWindow(QMainWindow):
             self._cancel_pending = False
 
     # ============================================================ 注销（2026-11-18）
-    def start_logout(self) -> None:
+    def start_logout(self, skip_confirm: bool = False) -> None:
         """
         注销当前校园网会话。
 
@@ -970,6 +1208,9 @@ class MainWindow(QMainWindow):
 
         **注销成功后不自动重连** —— 这是设计意图：
         用户要的就是"断开"，自动登回去等于白做。
+
+        skip_confirm: 切换账号时由 _on_account_changed 调用，
+                      那里已经解释过原因了，不用再问一遍。
         """
         if self._auth and self._auth.isRunning():
             self.set_status("正在连接中，请先取消再注销", "warn")
@@ -977,8 +1218,11 @@ class MainWindow(QMainWindow):
         if self._logout and self._logout.isRunning():
             return
 
-        # 在线状态一般才有意义，但离线下也允许点（幂等，服务端会返回未联网）
-        if not self._confirm_logout():
+        if not skip_confirm and not self._confirm_logout():
+            # 用户取消：如果是账号切换触发的，把下拉框退回去
+            if getattr(self, "_pending_account_switch", None) is not None:
+                self._pending_account_switch = None
+                self._revert_account_combo()
             return
 
         self._set_logout_busy(True)
@@ -1044,6 +1288,20 @@ class MainWindow(QMainWindow):
             self.pill.set_state(NetworkState.NEED_LOGIN)
             self.set_status(res.message, "ok")
             self.tray.notify("CampusLink", res.message or "已注销")
+
+            # ---- 账号切换流程：注销成功后才真正切过去（2026-11-18）----
+            pending = getattr(self, "_pending_account_switch", None)
+            if pending is not None:
+                self._pending_account_switch = None
+                try:
+                    self._load_account_into_form(pending)
+                    new_name = self.cfg.current_account().display_name()
+                    self.set_status(
+                        f"已注销旧账号，切换到 {new_name}，点「立即连接」登录", "ok")
+                except Exception:
+                    log.exception("切换账号失败")
+                    self.set_status("切换账号失败，请手动选择", "err")
+
             # 主动触发一次状态检测，让 pill 尽快反映"需要认证"
             if self._monitor:
                 self._monitor.request_check()
@@ -1052,6 +1310,10 @@ class MainWindow(QMainWindow):
             self.set_status(res.message, "err")
             if res.attempts:
                 self.lb_status.setText(f"{res.message}　（共尝试 {res.attempts} 次）")
+            # 账号切换没成功 → 下拉框退回原位
+            if getattr(self, "_pending_account_switch", None) is not None:
+                self._pending_account_switch = None
+                self._revert_account_combo()
 
     def _on_logout_thread_done(self) -> None:
         self._set_logout_busy(False)
@@ -1107,6 +1369,8 @@ class MainWindow(QMainWindow):
         # 认证进行中时不要用后台检测结果覆盖界面
         if self._auth and self._auth.isRunning():
             return
+        # 记住状态 —— 账号切换要判断"要不要先注销"（2026-11-18）
+        self._current_state = state
         self.pill.set_state(state)
         if state is NetworkState.ONLINE:
             self.set_status("网络已连通", "ok")
