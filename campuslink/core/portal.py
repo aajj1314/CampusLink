@@ -351,12 +351,19 @@ class PortalClient:
 
           1. **不需要「已在线」的特殊处理**。登录页在已在线时可能不给表单，
              但注销页任何状态都正常返回（实测：未联网时也返回完整表单）。
-          2. **必须解析出「当前在线状态」**。这是本次新增的权威信号，
-             用来判断注销前后状态是否真的变了。
-          3. lrl=1 查询参数必须保留 —— 它是「直接跳转」标记。
+          2. **必须解析出「当前在线状态」**。这是本次新增的权威信号。
 
-        实测 HTML（2026-11-18）：
-            <form method="post" action="./logoff?lrl=1" id="ctl01">
+        ═══ 关键：**不能拼 `lrl=1`**（2026-11-18 实测）═══
+
+            GET /logoff?lrl=1   →  当前在线状态 = 「未联网」
+            GET /logoff         →  当前在线状态 = 「已联网」   ← 真实状态
+
+        带 `lrl` 参数时服务端走的是另一个分支（大概是「logoff redirect
+        link」），显示的状态不可信。早期版本拼了 `lrl=1`，
+        导致一条真实在线的会话被判成未联网，注销功能完全测不出来。
+
+        实测 HTML（不带 lrl）：
+            <form method="post" action="./logoff" id="ctl01">
               __VIEWSTATE / __VIEWSTATEGENERATOR / __VIEWSTATEENCRYPTED / __EVENTVALIDATION
               ctl00$MainContent$TextBoxCC     (验证码, maxlength=4)
               ctl00$MainContent$LogoffBtn     (submit, value="注销")
@@ -367,7 +374,8 @@ class PortalClient:
             # portal_url 可能是 .../login，取其根
             if base.endswith("/login"):
                 base = base[:-len("/login")]
-            url = urljoin(base + "/", "logoff?lrl=1")
+            # ⚠️ 不带 lrl=1 —— 见上面的实测说明
+            url = urljoin(base + "/", "logoff")
 
         try:
             resp = self.session.get(url, timeout=self.profile.timeout)

@@ -45,18 +45,31 @@ RESHUFFLE_DELAY = 1.3
 #: 换会话重取的最大次数
 RESHUFFLE_TRIES = 4
 
-#: 注销成功的页面文案候选（2026-11-18 新增）。
+#: 注销成功的页面文案候选（2026-11-18 **实测确认**）。
 #:
-#: ⚠️ 这组是**兼容方案**，不是实测结论 —— 实测成功文案需要一个真实在线的
-#: 账号跑一次注销才能拿到，当时条件不具备。用户实测后应把真实文案补进来，
-#: 或删掉不相关的项。判据逻辑本身有第二条兜底（在线状态变化），
-#: 所以即使文案全不匹配，只要「已联网」变成「未联网」仍会判成功。
+#: 实测（`_SUCCESS_2.html`）：
+#:   <p class="validation-summary-errors">注销成功!</p>
+#:   页面全文: "... 当前在线状态 已联网 验证码 注销成功! © 2026 ..."
+#:
+#: 注意两点（都是实测踩出来的）：
+#:
+#:   1. **成功文案和「验证码错误!」在同一个容器里**
+#:      （`validation-summary-errors`），所以不能靠"容器有没有文字"判断，
+#:      必须匹配文案本身。
+#:
+#:   2. **注销成功后页面仍然显示「已联网」**
+#:      —— 服务端的在线状态字段不是实时刷新的。
+#:      所以「已联网 → 未联网」这个判据在成功时**不成立**，
+#:      不能作为主判据（早期版本靠它兜底，实测会误判成 unknown）。
+#:
+#: 因此判据以本组文案为主，`注销成功` 是确定的，其余是兼容其它门户的候选。
 LOGOFF_SUCCESS_HINTS = (
     "注销成功",
     "断开成功",
     "已注销",
     "已断开",
     "断开网络成功",
+    "下线成功",
 )
 
 #: 注销失败的页面文案
@@ -477,8 +490,6 @@ class Authenticator:
             if ok:
                 if reason == "already_offline":
                     msg = "账号本来就是未联网状态（注销无对象，目标状态已达成）"
-                elif reason == "state_changed":
-                    msg = "已注销（已联网 → 未联网）"
                 else:
                     msg = next((h for h in LOGOFF_SUCCESS_HINTS if h in resp.text),
                                "已注销")
@@ -507,38 +518,36 @@ class Authenticator:
 # ------------------------------------------------------------------ 注销判定
 def _judge_logout(html: str, before_state: str) -> tuple[bool, str, str]:
     """
-    判定一次注销提交的结果（2026-11-18 新增）。
+    判定一次注销提交的结果（2026-11-18 实测校准）。
 
     返回 (ok, reason, raw_message)
 
     reason 取值：
         "captcha_error"  —— 验证码错了，应换图重试（**唯一必须重试的失败**）
-        "success_hint"   —— 命中成功文案
-        "state_changed"  —— 在线状态从「已联网」变成「未联网」
+        "success_hint"   —— 命中成功文案（**实测唯一可靠的主判据**）
         "already_offline"—— 提交前就已经未联网（注销无对象，但不算失败）
         "unknown"        —— 说不好
 
-    判据优先级（按可靠性排）：
+    ═══ 实测事实（2026-11-18，真实在线账号）═══
 
-      1. **验证码错误** —— 实测最明确的信号：
-         <p class="validation-summary-errors">验证码错误!</p>
-         命中即失败，必须换图重来。
+    成功时的页面：
+        <p class="validation-summary-errors">注销成功!</p>
+        页面在线状态字段仍显示「已联网」
 
-      2. **成功文案** —— 从 LOGOFF_SUCCESS_HINTS 里找。
-         ⚠️ 这组文案**未经实测确认**（需要真实在线账号跑一次注销），
-         属于兼容方案。如果全部不命中，还有第 3、4 条兜底。
+    失败（验证码错）时的页面：
+        <p class="validation-summary-errors">验证码错误!</p>
 
-      3. **在线状态变化** —— 最可靠的兜底：
-         注销页的「当前在线状态」是服务端权威状态，
-         提交前「已联网」、提交后「未联网」就是注销成功了。
+    **两个关键推论：**
 
-      4. **本来就离线** —— 提交前就是「未联网」：
-         服务端没有会话可断，提交一个格式正确的验证码后
-         页面照旧显示「未联网」，没有任何变化可观察。
-         这种情况**不应判失败**（用户的目标状态已经达成），
-         但也不能说"注销成功"（本来就没登）。
-         实测（2026-11-18）：5 次提交全部没有「验证码错误」，
-         说明服务端接受了请求，只是没东西可断。
+      1. 成功和失败用**同一个提示容器**，不能靠"容器有无文字"判断。
+
+      2. 成功后在线状态**不更新**（还是「已联网」），
+         所以「已联网 → 未联网」这个变化判据在成功时**不成立**。
+         早期版本用它兜底，实测会把成功判成 unknown —— 已移除。
+
+    另外还发现：`/logoff?lrl=1`（带 lrl 参数）会显示「未联网」，
+    而不带参数的 `/logoff` 才显示真实状态。所以 `open_logout_page`
+    不能拼 `lrl=1`（见 portal.py）。
     """
     raw = extract_message_from_html(html) or ""
 
@@ -547,22 +556,17 @@ def _judge_logout(html: str, before_state: str) -> tuple[bool, str, str]:
         if hint in html or hint in raw:
             return False, "captcha_error", raw
 
-    # 2) 成功文案
+    # 2) 成功文案 —— 实测唯一可靠的主判据
     for hint in LOGOFF_SUCCESS_HINTS:
         if hint in html:
             return True, "success_hint", raw or hint
 
+    # 3) 提交前就已经离线 —— 目标状态已达成，但没有"注销"这个动作可做
     after_state = extract_online_state(html)
-
-    # 3) 在线状态变化（最可靠）
-    if before_state == "已联网" and after_state == "未联网":
-        return True, "state_changed", raw or "已联网 → 未联网"
-
-    # 4) 提交前就已经离线 —— 目标状态已达成，但没有"注销"这个动作可做
     if before_state == "未联网" and after_state == "未联网":
         return True, "already_offline", raw or "本来就是未联网状态"
 
-    # 5) 说不好
+    # 4) 说不好
     return False, "unknown", raw
 
 

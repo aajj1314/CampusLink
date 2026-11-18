@@ -138,11 +138,37 @@ class TestJudgeLogout:
             assert ok is True, f"'{hint}' 应该判成功"
             assert reason == "success_hint"
 
-    def test_state_changed(self):
-        """最可靠的兜底：已联网 → 未联网。"""
-        ok, reason, raw = _judge_logout(LOGOFF_HTML_OFFLINE, "已联网")
+    def test_real_success_page(self):
+        """
+        实测真实成功页（2026-11-18，_SUCCESS_2.html）。
+
+        关键事实：成功文案在 validation-summary-errors 容器里，
+        而且页面在线状态**仍然显示「已联网」**（服务端不实时刷新）。
+        """
+        html = """
+        <html><body>
+        <span id="MainContent_LocalIP">172.22.67.139</span>
+        <span id="MainContent_LabelOnline" style="color:LightGreen;">
+            <font color="LightGreen">已联网</font></span>
+        <p class="validation-summary-errors">注销成功!</p>
+        </body></html>
+        """
+        ok, reason, raw = _judge_logout(html, "已联网")
         assert ok is True
-        assert reason == "state_changed"
+        assert reason == "success_hint"
+        assert "注销成功" in raw
+
+    def test_state_change_alone_is_not_success(self):
+        """
+        ⚠️ 反直觉但实测确认：注销成功后在线状态**不会**变成「未联网」。
+        所以「已联网 → 未联网」不能当成功判据。
+        这里验证：只有状态变化、没有成功文案时，判 unknown（需要重试）。
+        """
+        html = ('<span id="MainContent_LabelOnline">'
+                '<font>未联网</font></span>')
+        ok, reason, _ = _judge_logout(html, "已联网")
+        assert ok is False
+        assert reason == "unknown"
 
     def test_already_offline_is_not_failure(self):
         """
@@ -153,8 +179,8 @@ class TestJudgeLogout:
         assert ok is True
         assert reason == "already_offline"
 
-    def test_state_unchanged_is_unknown(self):
-        """提交前已联网，提交后还是已联网 → 注销没生效。"""
+    def test_online_unchanged_is_unknown(self):
+        """提交前已联网，提交后还是已联网且无成功文案 → 注销没生效。"""
         ok, reason, _ = _judge_logout(LOGOFF_HTML_ONLINE, "已联网")
         assert ok is False
         assert reason == "unknown"
