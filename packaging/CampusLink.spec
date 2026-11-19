@@ -151,6 +151,106 @@ if _missing:
 print(f"[spec] datas={len(datas)} binaries={len(binaries)} "
       f"hiddenimports={len(hiddenimports)} excludes={len(excludes)}")
 
+# ------------------------------------------------------------------ 体积裁剪
+# 2026-11-19：逐项实测过才加的，每条都注明依据和验证方法。
+#
+# 为什么不在 Analysis 阶段用 excludes 解决：
+#   这些是**数据文件 / 原生 DLL**，不是 Python 模块，excludes 管不到。
+#   只能从 collect_all 的结果里筛掉。
+#
+# ⚠️ 加新条目时必须先验证「删掉后目标功能仍正常」，
+#    并把验证方法写在这里 —— 这类裁剪错了不会编译报错，只会运行时失效。
+#
+# 各条的实测依据见下方 _PRUNE_BY_NAME 的注释。
+
+# COLLECT 之前把命中的条目从 datas/binaries 里剔除。
+#
+# ⚠️ 路径归一化踩过坑（2026-11-19）：
+#   collect_all 返回的条目，第二个元素（dest dir）**可能是空字符串**，
+#   这时 `join(dest, basename)` 只剩文件名，
+#   用 "cv2/opencv_videoio_ffmpeg500_64.dll" 去 endswith 永远匹配不上。
+#   结果：第一次构建只裁掉了 datas 里的两个 onnx，
+#   binaries 里的 ffmpeg / opengl32sw 全漏了（少省 49 MB）。
+#
+#   修法：**只用 basename 匹配**（这些文件名足够独特），
+#   同时从 src 的真实路径里推出包名做二次确认。
+import os.path as _p
+
+
+def _entry_basename(entry) -> str:
+    return _p.basename(entry[0]).lower()
+
+
+def _entry_pkg(entry) -> str:
+    """
+    从 src 路径推包名：.../site-packages/<pkg>/... 里的 <pkg>。
+    推不出来时返回空串。
+    """
+    parts = entry[0].replace("\\", "/").split("/")
+    for i, seg in enumerate(parts):
+        if seg.lower() in ("site-packages", "dist-packages"):
+            if i + 1 < len(parts):
+                return parts[i + 1].lower()
+    return ""
+
+
+# 键改成 basename（唯一性足够），值里写明所属包便于核对
+_PRUNE_BY_NAME = {
+    "common.onnx": ("ddddocr", "51.58 MB；beta=False 不加载它（实测删掉无影响）"),
+    "common_det.onnx": ("ddddocr", "19.20 MB；只有 det=True 才加载，我们从不传"),
+    "opencv_videoio_ffmpeg500_64.dll": ("cv2", "29.45 MB；不做视频 IO"),
+    "opengl32sw.dll": ("pyside6", "19.68 MB；QWidget 不需要 OpenGL"),
+}
+
+
+def _should_prune(entry) -> str | None:
+    name = _entry_basename(entry)
+    hit = _PRUNE_BY_NAME.get(name)
+    if hit is None:
+        return None
+    expect_pkg, why = hit
+    actual_pkg = _entry_pkg(entry)
+    # 包名能对上才删（防止同名文件误伤别的库）
+    if actual_pkg and actual_pkg != expect_pkg:
+        return None
+    return f"{name} [{actual_pkg or '?'}]  ({why})"
+
+
+_pruned = []
+_seen_src = set()
+_new_datas = []
+for e in datas:
+    hit = _should_prune(e)
+    if hit:
+        if e[0] not in _seen_src:
+            _seen_src.add(e[0])
+            _pruned.append((hit, e[0]))
+        print(f"[spec] 裁剪 datas   -> {hit}")
+    else:
+        _new_datas.append(e)
+
+_new_binaries = []
+for e in binaries:
+    hit = _should_prune(e)
+    if hit:
+        if e[0] not in _seen_src:
+            _seen_src.add(e[0])
+            _pruned.append((hit, e[0]))
+        print(f"[spec] 裁剪 binaries-> {hit}")
+    else:
+        _new_binaries.append(e)
+
+datas = _new_datas
+binaries = _new_binaries
+
+_pruned_bytes = 0
+for _hit, _src in _pruned:
+    try:
+        _pruned_bytes += _p.getsize(_src)
+    except Exception:
+        pass
+print(f"[spec] 裁剪 {len(_pruned)} 个文件，合计 {_pruned_bytes / 1024 / 1024:.1f} MB")
+
 a = Analysis(
     [ENTRY],
     pathex=[str(ROOT)],
@@ -165,6 +265,48 @@ a = Analysis(
 )
 
 pyz = PYZ(a.pure)
+
+# ---------------------------- 二次裁剪：拦掉 hook 加进来的文件
+# 为什么需要两层（2026-11-19 实测）：
+#
+#   第一层（上面，COLLECT 前筛 datas/binaries）只能拦 collect_all 的产物。
+#   但 PySide6 的 hook 会把 opengl32sw.dll 塞进 a.binaries，
+#   cv2 的 hook（或 Analysis 阶段的依赖扫描）也会补回
+#   opencv_videoio_ffmpeg500_64.dll —— 这两个都不在 collect_all 的返回里，
+#   第一层筛了个寂寞（实测：日志说裁了 3 个文件 100.2 MB，
+#   但产物里这两个 DLL 还在，实际只省了 70.8 MB）。
+#
+#   所以要在 Analysis 之后、COLLECT 之前再筛一遍 a.binaries / a.datas。
+#
+# TOC 条目的形态：
+#   a.binaries:  (dest_name, src_path, typecode)    dest 形如 'PySide6\\opengl32sw.dll'
+#   a.datas:     (dest_name, src_path, typecode)    dest 形如 'ddddocr\\common.onnx'
+# 注意这里的 dest 是**相对输出根**的路径，带包名，可以直接匹配。
+
+
+def _prune_toc(toc, label):
+    kept, dropped = [], []
+    for entry in toc:
+        dest = str(entry[0]).replace("\\", "/")
+        name = dest.rsplit("/", 1)[-1].lower()
+        hit = _PRUNE_BY_NAME.get(name)
+        if hit is None:
+            kept.append(entry)
+            continue
+        expect_pkg, why = hit
+        parent = dest.rsplit("/", 1)[0].lower() if "/" in dest else ""
+        # 包名对得上才删，防止误伤
+        if parent and not parent.endswith(expect_pkg):
+            kept.append(entry)
+            continue
+        dropped.append((dest, why))
+        print(f"[spec] 二次裁剪 {label:<8}-> {dest}  ({why})")
+    return kept, dropped
+
+
+a.binaries, _d1 = _prune_toc(a.binaries, "binaries")
+a.datas, _d2 = _prune_toc(a.datas, "datas")
+
 
 exe = EXE(
     pyz,

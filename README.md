@@ -8,7 +8,7 @@
 - **免验证码注销**：一键断开，腾出会话名额给手机
 - **多账号**：一台电脑存多套账号，切换时自动先注销
 - **防多设备检测**：TTL 归一 + HTTP UA 归一（Windows 侧）
-- 打包成 `CampusLink_Setup_v2.1.2.exe`，双击安装，不需要装 Python
+- 打包成 `CampusLink_Setup_v2.1.3.exe`（**98.9 MB**），双击安装，不需要装 Python
 
 > **本项目是在原有可运行版本基础上做的增量开发。**
 > 原项目（`../captcha-login/`）完整保留、未做任何修改，并已备份到
@@ -173,12 +173,56 @@ dist\CampusLink\CampusLink.exe --selftest
 #### ⚠️ `packaging/CampusLink.iss` 的 `DistDir` 必须核对
 
 ```ini
-#define DistDir ProjectRoot + "\dist12\CampusLink"
+#define DistDir ProjectRoot + "\dist16\CampusLink"
 ```
 
 **这个值每次打包前都要确认指向当前产物目录。** 指向旧目录时
 Inno Setup **照样编译成功**，只是安装包里装的是旧版本，完全看不出来。
 历史上踩过一次。
+
+#### 体积裁剪（2026-11-19）
+
+产物从 **449.2 MB 降到 329.3 MB**，安装包从 **178.5 MB 降到 98.9 MB**。
+
+裁剪逻辑在 `CampusLink.spec` 里，有**两层**：
+
+| 层 | 位置 | 拦得住什么 |
+|---|---|---|
+| 一层 | `collect_all` 之后、`Analysis` 之前 | `collect_all` 返回的 entries |
+| 二层 | `Analysis` 之后、`COLLECT` 之前 | hook 在 Analysis 阶段补进来的文件 |
+
+**为什么必须两层**：`PySide6` 的 hook 会把 `opengl32sw.dll` 塞进
+`a.binaries`，`cv2` 的 hook 也会补回 `opencv_videoio_ffmpeg500_64.dll`
+—— 这两个都不在 `collect_all` 的返回里，只做一层会漏
+（实测：日志说裁了 3 个文件 100.2 MB，产物里那两个 DLL 还在，实际只省 70.8 MB）。
+
+裁掉的文件：
+
+| 文件 | 大小 | 依据 |
+|---|---|---|
+| `ddddocr/common.onnx` | 51.58 MB | 代码传 `beta=False` → 走 `common_old.onnx`。A/B 实测 10 张真实验证码：common_old 对 8 次，common 只对 1 次 |
+| `ddddocr/common_det.onnx` | 19.20 MB | 只有 `det=True` 才加载，我们从不传 |
+| `cv2/opencv_videoio_ffmpeg500_64.dll` | 29.45 MB | 全仓库 `cv2.VideoCapture`/`VideoWriter` = 0 处 |
+| `PySide6/opengl32sw.dll` | 19.68 MB | QWidget 不需要 OpenGL（删后 GUI 截图验证正常） |
+
+**加新裁剪项时必须做的三件事**：
+1. 在 `_PRUNE_BY_NAME` 里写清「多大、为什么能删、怎么验证的」
+2. 重建后跑 `--selftest`
+3. **用真实样本验证目标功能**（自检只跑空白图，测不出识别率变化）
+
+⚠️ 这类裁剪错了**不会编译报错**，只会运行时静默失效。
+
+#### 没裁的部分（收益/风险不划算）
+
+| 目标 | 大小 | 为什么不裁 |
+|---|---|---|
+| `cv2.pyd` | 82.3 MB | 注销链路用它的 `imdecode`/`cvtColor`/`adaptiveThreshold`。想省只能重写预处理 |
+| `numpy` 的 OpenBLAS | 19.55 MB | cv2/onnxruntime 都依赖，动了直接崩 |
+| `ddddocr` 库 + `common_old.onnx` | 13.2 MB | 想省必须自己实现 CTC 解码 |
+
+理论上把 cv2 + ddddocr 都换成「纯 onnxruntime + PIL」能到约 230 MB，
+但实测过一个复现版本：cap2/cap3 完全一致，**cap1 多认出一个字符**
+（置信度 0.703）。识别率直接决定注销成功率，不值。
 
 ---
 
@@ -440,7 +484,8 @@ onefile 每次运行都要把几百 MB 解压到 `%TEMP%`，启动要十几秒�
 | 2.0.x | 算式验证码改用专用 CRNN 模型（92.2%）；剥离 ddddocr；加 `--selftest` |
 | **2.1.0** | **免验证码注销**（ddddocr + 置信度门限）；**多账号** + 切换自动注销；**Windows 侧 UA 归一** |
 | 2.1.1 | 修：多账号入口被隐藏、新增时丢备注名 |
-| **2.1.2** | 修：默认窗口太窄导致账号行按钮被切；清理 ml2 实验线 |
+| 2.1.2 | 修：默认窗口太窄导致账号行按钮被切；清理 ml2 实验线 |
+| **2.1.3** | **体积裁剪**：产物 449→329 MB，安装包 178.5→98.9 MB（去 4 个无用大文件） |
 
 ---
 
@@ -452,7 +497,7 @@ onefile 每次运行都要把几百 MB 解压到 `%TEMP%`，启动要十几秒�
 | 只内置了一所学校的门户档案 | 换学校需新增 `profiles/*.json`，代码不用改 |
 | 未做代码签名 | 首次运行会被 SmartScreen 拦一下（「更多信息 → 仍要运行」），个别杀软可能误报 |
 | 无自动更新 | 需要重新下载安装包覆盖安装 |
-| 安装包约 178 MB | ddddocr + cv2 + onnxruntime 模型占大头。裁掉 `common_det.onnx` / `common_old.onnx` / `opencv_videoio_ffmpeg` 可省约 62 MB，但要先确认不影响注销识别 |
+| 安装包约 99 MB | 已从 178.5 MB 裁到 98.9 MB（见 3.4 节）。剩余大头是 `cv2.pyd`(82 MB) + `onnxruntime`(42 MB)，再裁会降识别率 |
 | UA 归一不覆盖 HTTPS | 协议决定的，任何工具都做不到（除非做 TLS 中间人） |
 | UA 归一不能变长 | 新 UA 比原 UA 长时会被截断（与 ua2f 一致） |
 | 防检测需管理员权限 | WinDivert 要装内核驱动 |

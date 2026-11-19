@@ -16,14 +16,14 @@
 
 #define MyAppName "CampusLink"
 #define MyAppNameCN "校园网认证客户端"
-#define MyAppVersion "2.1.2"
+#define MyAppVersion "2.1.3"
 #define MyAppPublisher "CampusLink"
 #define MyAppExeName "CampusLink.exe"
 #define MyAppId "{{8F3A7C21-4B6E-4E2A-9D58-2C1F7A9E5B04}"
 
 ; 上一级目录（本文件在 packaging/ 下）
 #define ProjectRoot SourcePath + ".."
-#define DistDir ProjectRoot + "\dist12\CampusLink"
+#define DistDir ProjectRoot + "\dist16\CampusLink"
 
 [Setup]
 AppId={#MyAppId}
