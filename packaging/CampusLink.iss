@@ -16,14 +16,14 @@
 
 #define MyAppName "CampusLink"
 #define MyAppNameCN "校园网认证客户端"
-#define MyAppVersion "2.1.4"
+#define MyAppVersion "2.1.5"
 #define MyAppPublisher "CampusLink"
 #define MyAppExeName "CampusLink.exe"
 #define MyAppId "{{8F3A7C21-4B6E-4E2A-9D58-2C1F7A9E5B04}"
 
 ; 上一级目录（本文件在 packaging/ 下）
 #define ProjectRoot SourcePath + ".."
-#define DistDir ProjectRoot + "\dist18\CampusLink"
+#define DistDir ProjectRoot + "\dist19\CampusLink"
 
 [Setup]
 AppId={#MyAppId}
@@ -42,7 +42,23 @@ AllowNoIcons=yes
 
 ; ---- 权限：装到 Program Files 需要管理员 ----
 PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=dialog
+
+; 2026-11-19 去掉了 PrivilegesRequiredOverridesAllowed=dialog。
+;
+; 它原本的作用：让用户能选「仅为当前用户安装」（装到 LOCALAPPDATA，
+; 不需要管理员权限）。
+;
+; 去掉的原因 —— 它破坏了单实例检查：
+;
+;   dialog 模式会在 **InitializeSetup 之前**弹出「选择安装模式」对话框。
+;   实测同时启动两个安装器时，两个进程都先弹这个框、都进向导，
+;   [Code] 里的互斥检查根本没机会跑（顺序上晚了一步）。
+;   结果就是用户截图里看到的：界面重叠、底部冒出两个「上一步」按钮。
+;
+; 而它带来的收益很小：本程序要写 Program Files、还要注册 WinDivert
+; 内核驱动（防检测功能必需），没有管理员权限本来也用不了完整功能。
+;
+; 权衡后：单实例可靠 > 支持非管理员安装。
 
 ; ---- 输出 ----
 OutputDir=output
@@ -62,6 +78,12 @@ WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes
 LZMAUseSeparateProcess=yes
+
+; ---- 单实例限制 ----
+; 不在 [Setup] 里用 SetupMutex —— 实测那个指令没生效
+; （同时启动两个安装器，两个都能进向导、都能继续装）。
+; 改成在 [Code] 的 InitializeSetup 里自己维护互斥，
+; 行为可验证、可控制。详见文件末尾 [Code] 段的说明。
 
 ; ---- 安装路径选择页 ----
 ; 2026-11-19：从 auto 改成 no。
@@ -105,6 +127,11 @@ Name: "startup";     Description: "开机自动启动（登录 Windows 后自动
 ;   UninstallAppFullTitle —— 带版本/名称的完整标题（向导内某些位置用）
 ;   两条都要覆盖，只改一条不够。
 SetupWindowTitle={#MyAppName} {#MyAppNameCN} 安装程序
+; SetupAppTitle 是**简版标题**，用在：消息框、任务栏、初始化失败提示等。
+; 实测漏了这条：InitializeSetup 返回 False 后弹出的窗口
+; 标题显示成 "[name] 安装程序"（中文语言包里硬编码的字面 [name]）。
+; 两条都要覆盖。
+SetupAppTitle={#MyAppName} {#MyAppNameCN} 安装程序
 UninstallAppTitle=卸载 {#MyAppName}
 UninstallAppFullTitle=卸载 {#MyAppName} {#MyAppNameCN}
 UninstallLabel=卸载 {#MyAppName}
@@ -151,6 +178,99 @@ Type: filesandordirs; Name: "{app}\_internal"
 Type: files;          Name: "{app}\*.dll"
 
 [Code]
+{ ============================================================
+  单实例检查（2026-11-19 加）
+  ============================================================
+
+  问题：不加限制时，用户可以同时开多个安装器（比如双击两次）。
+  后果：
+    · 两个向导窗口重叠 —— 实测用户截图里底部露出两个「上一步」按钮
+    · 两个实例同时解压同一批文件，写入冲突
+    · 可能留下半装状态（文件不全但注册表已写）
+
+  为什么不用 [Setup] 的 SetupMutex：
+    实测设置了 `SetupMutex=CampusLinkSetupMutexV2` 但**没生效** ——
+    同时启动两个安装器，两个都正常进入向导，都能继续。
+    也确认过这个值没被编进安装包（Inno 会加密元数据，
+    用字符串搜索验证不了，只能行为测试）。
+
+  改用 [Code] 里自己维护一个互斥：
+    CreateMutex 句柄存在 = 已有实例在跑
+    句柄只在本进程生命周期内有效，进程退出系统自动释放，
+    不会像锁文件那样留下"假死"的锁把用户永久挡在外面。
+
+  注意：必须在 InitializeSetup 里做（最早的时机），
+  放到 ssInstall 就晚了 —— 那时文件已经开始复制。
+  ============================================================ }
+
+const
+  { 全局命名，跨会话（多用户切换）也互斥 }
+  MUTEX_NAME = 'Global\CampusLink_Setup_SingleInstance_v2';
+
+{ kernel32 的两个 API。
+  注意 GetLastError 的调用必须紧跟在 CreateMutex 之后 ——
+  Inno 的脚本引擎本身可能插进别的 win32 调用把错误码冲掉，
+  所以这里把两步包进同一个函数里，中间不留空隙。 }
+function CreateMutexW(lpMutexAttributes: LongWord;
+                      bInitialOwner: Boolean;
+                      lpName: String): THandle;
+  external 'CreateMutexW@kernel32.dll stdcall';
+
+function GetLastError(): LongWord;
+  external 'GetLastError@kernel32.dll stdcall';
+
+{ 返回 True 表示「已有实例在跑」 }
+function AnotherInstanceRunning(): Boolean;
+var
+  Mutex: THandle;
+  LastErr: LongWord;
+begin
+  Mutex := CreateMutexW(0, False, MUTEX_NAME);
+  LastErr := GetLastError();
+
+  { CreateMutex 失败（返回 0）：不要阻塞安装。
+    宁可允许装，也别因为权限问题让用户装不了。 }
+  if Mutex = 0 then
+  begin
+    Result := False;
+    Exit;
+  end;
+
+  { ERROR_ALREADY_EXISTS = 183
+    Windows 语义：互斥已存在时仍然返回有效句柄，
+    但 GetLastError 被设为 183 —— 这正是我们要的信号。 }
+  Result := (LastErr = 183);
+
+  { 句柄故意不关：
+    第一个实例持有它直到进程退出（系统自动释放），
+    第二个实例拿到句柄后立刻退出，也不会泄漏。 }
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  if AnotherInstanceRunning() then
+  begin
+    { 静默模式（/SILENT、/VERYSILENT）下不弹框 ——
+      无人值守调用（脚本批量装、远程部署）时弹框会一直挂着。
+      而且 /SUPPRESSMSGBOXES 对 [Code] 里的 MsgBox 不生效
+      （实测：/VERYSILENT + /SUPPRESSMSGBOXES 时进程仍然卡在 MsgBox 上）。
+      所以这里自己判断，静默时直接返回 False 退出。}
+    if WizardSilent() then
+    begin
+      Result := False;
+      Exit;
+    end;
+
+    MsgBox('CampusLink 安装程序已经在运行。' + #13#10 + #13#10 +
+           '请先关闭已经打开的安装窗口，再重新运行。' + #13#10 + #13#10 +
+           '同时运行两个安装程序会导致文件写入冲突、界面重叠，' + #13#10 +
+           '甚至留下装了一半的状态。',
+           mbError, MB_OK);
+    Result := False;
+  end
+  else
+    Result := True;
+end;
 { 卸载时询问是否删除用户配置。
   注意：账号密码存在 Windows 凭据管理器里，安装脚本没有权限删
   （那是系统级凭据，由用户的 Windows 账户保护），所以在提示里说清楚。 }
