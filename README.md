@@ -25,7 +25,7 @@ CampusLink/
 │   │   ├── models.py          数据模型：凭据 / 结果 / 门户档案
 │   │   ├── portal.py          门户协议层：登录页 + 注销页解析、提交、判定
 │   │   ├── authenticator.py   编排：login() 重试 / logout() 注销 / 判定
-│   │   ├── ocr.py             字符验证码识别（ddddocr 多策略 + 投票）
+│   │   ├── ocr.py             字符验证码：多策略预处理（PIL+numpy）+ 投票
 │   │   ├── ocr_backend.py     OCR 后端：text / math / logout 三种模式
 │   │   ├── crnn_math.py       算式验证码专用 CRNN 模型推理
 │   │   ├── captcha_math.py    算式求解 + 答案校验
@@ -62,7 +62,7 @@ CampusLink/
 │   ├── version_info.txt       exe 版本资源
 │   ├── build_exe.bat          打包成 exe
 │   └── build_installer.bat    做成安装程序
-├── tests/                     pytest 测试（476 条）
+├── tests/                     pytest 测试（514 条）
 │   └── contract/              Router API 契约测试
 ├── tools/                     辅助脚本（图标、冒烟测试）
 └── docs/                      用户手册、依赖说明、设计文档、交接文档
@@ -139,7 +139,7 @@ python -m venv .venv
 ### 3.3 测试
 
 ```bat
-.venv\Scripts\python -m pytest                    :: 476 条
+.venv\Scripts\python -m pytest                    :: 514 条
 .venv\Scripts\python -m pytest tests\test_logout.py -v   :: 单个文件
 .venv\Scripts\python tools\smoke_gui.py           :: GUI 无头冒烟
 ```
@@ -216,13 +216,38 @@ Inno Setup **照样编译成功**，只是安装包里装的是旧版本，完�
 
 | 目标 | 大小 | 为什么不裁 |
 |---|---|---|
-| `cv2.pyd` | 82.3 MB | 注销链路用它的 `imdecode`/`cvtColor`/`adaptiveThreshold`。想省只能重写预处理 |
+| **`cv2.pyd`** | **82.3 MB** | **`ddddocr` 在 import 阶段硬依赖它**（详见下方） |
 | `numpy` 的 OpenBLAS | 19.55 MB | cv2/onnxruntime 都依赖，动了直接崩 |
 | `ddddocr` 库 + `common_old.onnx` | 13.2 MB | 想省必须自己实现 CTC 解码 |
 
-理论上把 cv2 + ddddocr 都换成「纯 onnxruntime + PIL」能到约 230 MB，
-但实测过一个复现版本：cap2/cap3 完全一致，**cap1 多认出一个字符**
-（置信度 0.703）。识别率直接决定注销成功率，不值。
+##### 关于 cv2：我们不用了，但删不掉
+
+2026-11-19 把 `core/ocr.py` 的四个预处理全部改成 PIL + numpy
+（`cvtColor` / `adaptiveThreshold` / `medianBlur` / `morphologyEx`
+分别用 PIL / 积分图 / `np.median` / erode-dilate 实现），
+`ocr.py` 已经**不再 import cv2**。
+
+但 `cv2` 还是删不掉，因为 **ddddocr 自己硬依赖它**：
+
+```
+ddddocr/__init__.py:3
+  → compat/__init__.py:7
+    → compat/v1.py:11
+      → core/__init__.py:8
+        → core/ocr_engine.py:13   ← safe_import_opencv() 抛 ImportError
+```
+
+这是**模块级**依赖（不是函数内），所以 `import ddddocr` 就失败，
+注销功能整个不可用。`safe_import_opencv()` 名字叫 "safe"，
+实际是「导入失败 → 打印一堆解决方案 → 抛 ImportError」，没有降级。
+
+> ⚠️ **曾经误判过**：一度以为「ddddocr 只 import cv2 但注销路径不调用它，
+> 所以能删」。测试时塞了个假 cv2 模块（import 能成功），确实跑通了；
+> 但**真缺包时直接炸**。判断第三方库的硬依赖不能靠"看起来没用到"。
+
+真要省这 82 MB，只有一条路：不用 ddddocr，自己用 onnxruntime
+复现它的 CTC 解码。实测过一个版本：cap2/cap3 完全一致，
+**cap1 会多认一个字符**（置信度 0.703）。识别率直接决定注销成功率，不值。
 
 ---
 
@@ -263,6 +288,35 @@ Panabit 系门户还有 `t` / `sccpTimestamp` 这类一次性令牌。
 **注销侧为什么用 ddddocr 且不投票**：注销页每次换图，重试成本极低；
 而 ddddocr 的 `probability=True` 能直接给出**真实置信度**（实测 0.95~0.99），
 比"策略一致率"准确得多。所以单次识别 + 置信度门限即可。
+
+#### 图像预处理：PIL + numpy，不用 OpenCV（2026-11-19）
+
+`core/ocr.py` 的四个预处理策略原本全走 cv2，现在改用 PIL + numpy：
+
+| 原 cv2 调用 | 现实现 | 与 cv2 的像素差异 |
+|---|---|---|
+| `cvtColor(BGR2GRAY)` | `Image.convert("L")` | ≤1 个量化级（实测 16/20000 像素）|
+| `adaptiveThreshold(MEAN_C,11,2)` | 积分图 box-mean + **四舍五入** | 0 |
+| `medianBlur(3)` | `np.median` 3×3，`mode="edge"` | 0 |
+| `morphologyEx(OPEN,2×2)` | erode→dilate，**anchor=(1,1)** | 0 |
+| `cvtColor(BGR2HSV)` 取 S | 整数四舍五入 `(max-min)*255/max` | ≤1 个量化级 |
+| `bitwise_not` | `255 - arr` | 0 |
+
+**三个必须照抄的细节**（弄错就静默改变识别结果，实测数据）：
+
+1. `medianBlur` 边界是 **replicate**，不是 reflect/constant（差 22~29 像素）
+2. 偶数核 `getStructuringElement(MORPH_RECT,(2,2))` 的锚点是 **(1,1)** 不是 (0,0)
+   （写错会整体偏移 1 像素，差 759~821 像素）
+3. `adaptiveThreshold` 的均值要**四舍五入取整** —— cv2 内部用
+   `boxFilter(ddepth=-1)`，输出深度跟输入一致（8U）
+   （不取整时在大量 0 的区域判错 13~30 像素）
+
+在**真实注销验证码**上，三种策略与 cv2 都是 **0 像素差异**。
+随机图压力测试下灰度/饱和度各有 ≤1 的量化差（cv2 用的是整型定点，
+浮点无法完全复现），但二值化后结果一致。
+
+> 注意：这只是「我们的图像处理不再依赖 cv2」，**不代表打包能删 cv2**——
+> ddddocr 在 import 阶段硬依赖它，见 3.4 节。
 
 ### 4.3 登录验证码：不刷新时的去重
 
@@ -513,7 +567,7 @@ onefile 每次运行都要把几百 MB 解压到 `%TEMP%`，启动要十几秒�
 | 配置位置 | exe 旁边 | `%APPDATA%\CampusLink` |
 | 账号 | 单账号 | 多账号，可切换 |
 | 门户差异 | 散在配置文件里 | 收敛成 `profiles/*.json` |
-| 测试 | 纯脚本断言 | pytest，476 条 |
+| 测试 | 纯脚本断言 | pytest，514 条 |
 | 开机启动 | 任务计划程序 | 注册表 Run 键 |
 
 旧版**保持原样可用**，两者互不影响（不共享虚拟环境、不共享数据目录）。

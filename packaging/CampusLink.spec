@@ -11,12 +11,14 @@ PyInstaller 打包规格。
    onefile 每次运行都要把几百 MB 解压到 %TEMP%，启动要十几秒。
    本项目是常驻托盘的程序，onedir 启动不到 2 秒，明显更合适。
 
-2. **必须 --collect-all onnxruntime / keyring / pydivert。**
+2. **必须 --collect-all onnxruntime / keyring / pydivert / ddddocr / cv2。**
    onnxruntime 的原生 DLL 是 data 文件，PyInstaller 的静态分析看不见，
    不收集的话编译能过、运行时才报 "No such file or directory: common.onnx"。
    pydivert 同理：WinDivert.dll 和 WinDivert64.sys 是包数据，缺了共享助手
    会报「pydivert 不可用」。
-   （2.0 起 ddddocr / cv2 已剥离，见 excludes 段的说明。）
+   ddddocr + cv2 是注销功能要的（2026-11-18 加回）；
+   cv2 虽然我们自己不用了（ocr.py 已改 PIL+numpy），
+   但 ddddocr 在 import 阶段硬依赖它，删不得（见 excludes 末尾）。
 
 3. **排除用不到的 Qt 模块。**
    PySide6 完整安装有 650 MB（含 WebEngine/Chromium）。我们只用
@@ -93,6 +95,8 @@ hiddenimports = [
     # 2026-11-18：注销验证码走 ddddocr，必须显式列出
     # （core/ocr.py 里是函数内延迟 import，静态分析看不全）
     "ddddocr",
+    # cv2：ddddocr 在 import 阶段硬依赖（见 excludes 末尾说明）。
+    # 虽然我们自己的 ocr.py 已经不用 cv2 了，但 ddddocr 需要它才能 import。
     "cv2",
 ]
 
@@ -127,12 +131,39 @@ excludes = [
     #   「字符识别引擎不可用」。
     # 代价是产物大 ~40MB（ddddocr 自带 onnxruntime 模型 + cv2）。
     # 登录侧的算式验证码仍走 CRNN 专用模型，不受影响。
+    # ---- ⚠️ 2026-11-19：cv2 **不能**排除，实测过 ----
+    #
+    # core/ocr.py 已经不 import cv2 了（四个预处理用 PIL + numpy 重写，
+    # 逐像素与 cv2 完全一致）。但 **ddddocr 自己硬依赖 cv2**：
+    #
+    #   ddddocr/__init__.py:3
+    #     → compat/__init__.py:7
+    #       → compat/v1.py:11
+    #         → core/__init__.py:8
+    #           → core/ocr_engine.py:13   ← safe_import_opencv() 抛 ImportError
+    #
+    # 这是**模块级**的（不是函数内），所以 import ddddocr 就失败，
+    # 注销功能整个不可用。safe_import_opencv() 名字叫 "safe"，
+    # 实际是「导入失败 → 打印一堆解决方案 → 抛 ImportError」，没有降级。
+    #
+    # 曾经误判为「只 import 不调用所以能删」—— 那是因为测试时
+    # 塞了个假 cv2 模块（import 能成功）。真缺包时直接炸。
+    #
+    # 真要省这 82 MB，只有两条路（都不建议轻易做）：
+    #   1. 去掉 ddddocr，自己用 onnxruntime 复现 CTC 解码
+    #      （实测过一个版本，cap1 会多认一个字符，置信度 0.703 → 识别率下降）
+    #   2. patch ddddocr 的 import 链（第三方库，升级即丢）
+    #
+    # 所以 cv2 **保留**。这条注释是为了防止下次又有人想删它。
 ]
 
 # ---- 收集带 data 文件 / 原生库的包 ----
-# 2026-11-18：ddddocr / cv2 重新纳入收集 —— 注销功能的验证码走它们。
-# ddddocr 自带 onnx 模型（约 20MB），cv2 有原生 DLL，必须 collect_all，
-# 否则编译能过、运行时才报模型或 DLL 找不到。
+# 2026-11-18：ddddocr 重新纳入收集 —— 注销功能的验证码走它。
+# ddddocr 自带 onnx 模型（约 13MB，只用 common_old.onnx），
+# 必须 collect_all，否则编译能过、运行时才报模型找不到。
+#
+# ⚠️ cv2 也必须收集 —— ddddocr 在 **import 阶段**就硬依赖它
+#    （详见上面 excludes 末尾的说明）。82 MB，删不掉。
 binaries = []
 _missing = []
 for pkg in ("onnxruntime", "keyring", "pydivert", "ddddocr", "cv2"):
