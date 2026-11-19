@@ -4,8 +4,8 @@
 # 语言代码 0804 = 简体中文，代码页 1200 = Unicode。
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 1, 3, 0),
-    prodvers=(2, 1, 3, 0),
+    filevers=(2, 1, 4, 0),
+    prodvers=(2, 1, 4, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -20,12 +20,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'CampusLink'),
           StringStruct('FileDescription', 'CampusLink 校园网认证客户端'),
-          StringStruct('FileVersion', '2.1.3.0'),
+          StringStruct('FileVersion', '2.1.4.0'),
           StringStruct('InternalName', 'CampusLink'),
           StringStruct('LegalCopyright', 'Copyright (C) 2026 CampusLink'),
           StringStruct('OriginalFilename', 'CampusLink.exe'),
           StringStruct('ProductName', 'CampusLink 校园网认证'),
-          StringStruct('ProductVersion', '2.1.3.0'),
+          StringStruct('ProductVersion', '2.1.4.0'),
           StringStruct('Comments', '校园网认证客户端，支持自动重连与托盘常驻')
         ]
       )
